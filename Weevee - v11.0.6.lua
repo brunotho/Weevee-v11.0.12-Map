@@ -12,7 +12,7 @@ include("DEFMultilayeredFractalW");
 include("DEFFeatureGeneratorW");
 include("DEFTerrainGeneratorW");
 
-print("Weevee Map 11.0.5 script loaded");
+print("Weevee Map 11.0.6 script loaded");
 
 local weeveeDbgHandle = nil;
 local WEEVEE_DBG_PATHS = {
@@ -51,6 +51,7 @@ end
 function WeeveeDbgReset()
 	WeeveeDbgOpen("w");
 	WeeveeDbg("weevee dbg start");
+	TongueResetLine();
 end
 function WeeveeDbgCall(name, fn, a1, a2, a3, a4, a5)
 	WeeveeDbg("enter " .. name);
@@ -61,12 +62,12 @@ function WeeveeDbgCall(name, fn, a1, a2, a3, a4, a5)
 		WeeveeDbg("ERR " .. name .. " " .. tostring(err));
 	end
 end
-WeeveeDbg("script loaded 11.0.5");
+WeeveeDbg("script loaded 11.0.6");
 
 local OPT_CENTER_SPLIT = 1;
-local OPT_SNOW_BARRIER = 2;
-local OPT_WRAP = 3;
-local OPT_FRONT_MOUNTAIN = 4;
+local OPT_FRONT_MOUNTAIN = 2;
+local OPT_SNOW_BARRIER = 3;
+local OPT_WRAP = 4;
 local OPT_CANVAS_SHRINK = 5;
 local OPT_EXPLO_BALANCE = 6;
 local CANVAS_SHRINK_NO = 1;
@@ -80,7 +81,10 @@ local SPLIT_DESERT = 4;
 local SPLIT_WASTELAND = 5;
 local SPLIT_PEAKS = 6;
 local SPLIT_FROSTY = 7;
-local SPLIT_RANDOM = 8;
+local SPLIT_TONGUE = 8;
+local SPLIT_SNAKY = 9;
+local SPLIT_RANDOM = 10;
+local SPLIT_MENU_RANDOM = 9;
 local WRAP_NO = 1;
 local WRAP_YES = 2;
 local WRAP_RANDOM = 3;
@@ -114,47 +118,27 @@ end
 ------------------------------------------------------------------------------
 function GetMapScriptInfo()
 	return {
-		Name = "[COLOR_HIGHLIGHT_TEXT] Weevee Map 11.0.5 [ENDCOLOR]",
+		Name = "[COLOR_HIGHLIGHT_TEXT] Weevee Map 11.0.6 [ENDCOLOR]",
 		Description = "",
+		IsAdvancedMap = false,
 		SupportsMultiplayer = true,
 		IconIndex = 18,
 		CustomOptions = {
 			{
 				Name = "[COLOR_HIGHLIGHT_TEXT]Climate[ENDCOLOR]",
 				Values = {
-					"[COLOR_HIGHLIGHT_TEXT]Snow (Legacy)[ENDCOLOR]",
 					"[COLOR_HIGHLIGHT_TEXT]Standard[ENDCOLOR]",
 					"[COLOR_HIGHLIGHT_TEXT]Murky[ENDCOLOR]",
 					"[COLOR_HIGHLIGHT_TEXT]Oasis[ENDCOLOR]",
 					"[COLOR_HIGHLIGHT_TEXT]Wasteland[ENDCOLOR]",
 					"[COLOR_HIGHLIGHT_TEXT]Peaky[ENDCOLOR]",
 					"[COLOR_HIGHLIGHT_TEXT]Frosty[ENDCOLOR]",
-					"[COLOR_HIGHLIGHT_TEXT][ICON_CAPITAL] Random (sans Snow)[ENDCOLOR]"
+					"[COLOR_HIGHLIGHT_TEXT]Diagonal[ENDCOLOR]",
+					"[COLOR_HIGHLIGHT_TEXT]Slate[ENDCOLOR]",
+					"[COLOR_HIGHLIGHT_TEXT][ICON_CAPITAL] Random[ENDCOLOR]"
 				},
-				DefaultValue = 8,
+				DefaultValue = 9,
 				SortPriority = -99,
-			},
-			{
-				Name = "[COLOR_HIGHLIGHT_TEXT]Barrier Width[ENDCOLOR]",
-				Values = {
-					"[COLOR_HIGHLIGHT_TEXT]0[ENDCOLOR]",
-					"[COLOR_HIGHLIGHT_TEXT]2[ENDCOLOR]",
-					"[COLOR_HIGHLIGHT_TEXT][ICON_CAPITAL] 4[ENDCOLOR]",
-					"[COLOR_HIGHLIGHT_TEXT]6[ENDCOLOR]",
-					"[COLOR_HIGHLIGHT_TEXT]Random (2-6)[ENDCOLOR]",
-				},
-				DefaultValue = 3,
-				SortPriority = -98,
-			},
-			{
-				Name = "[COLOR_HIGHLIGHT_TEXT]World Wrap[ENDCOLOR]",
-				Values = {
-					"[COLOR_HIGHLIGHT_TEXT]No wrap[ENDCOLOR]",
-					"[COLOR_HIGHLIGHT_TEXT][ICON_CAPITAL] Wrap[ENDCOLOR]",
-					"[COLOR_HIGHLIGHT_TEXT]Random[ENDCOLOR]",
-				},
-				DefaultValue = 2,
-				SortPriority = -97,
 			},
 			{
 				Name = "[COLOR_HIGHLIGHT_TEXT]Front Mountain %[ENDCOLOR]",
@@ -168,6 +152,28 @@ function GetMapScriptInfo()
 					"[COLOR_HIGHLIGHT_TEXT]50%[ENDCOLOR]",
 				},
 				DefaultValue = 4,
+				SortPriority = -98,
+			},
+			{
+				Name = "[COLOR_HIGHLIGHT_TEXT]Barrier Width[ENDCOLOR]",
+				Values = {
+					"[COLOR_HIGHLIGHT_TEXT]0[ENDCOLOR]",
+					"[COLOR_HIGHLIGHT_TEXT]2[ENDCOLOR]",
+					"[COLOR_HIGHLIGHT_TEXT][ICON_CAPITAL] 4[ENDCOLOR]",
+					"[COLOR_HIGHLIGHT_TEXT]6[ENDCOLOR]",
+					"[COLOR_HIGHLIGHT_TEXT]Random (2-6)[ENDCOLOR]",
+				},
+				DefaultValue = 3,
+				SortPriority = -97,
+			},
+			{
+				Name = "[COLOR_HIGHLIGHT_TEXT]World Wrap[ENDCOLOR]",
+				Values = {
+					"[COLOR_HIGHLIGHT_TEXT][ICON_CAPITAL] No[ENDCOLOR]",
+					"[COLOR_HIGHLIGHT_TEXT]Yes[ENDCOLOR]",
+					"[COLOR_HIGHLIGHT_TEXT]Random[ENDCOLOR]",
+				},
+				DefaultValue = 1,
 				SortPriority = -96,
 			},
 			{
@@ -182,10 +188,10 @@ function GetMapScriptInfo()
 			{
 				Name = "[COLOR_HIGHLIGHT_TEXT]Explo Balance[ENDCOLOR]",
 				Values = {
-					"[COLOR_HIGHLIGHT_TEXT][ICON_CAPITAL] No[ENDCOLOR]",
-					"[COLOR_HIGHLIGHT_TEXT]Yes[ENDCOLOR]",
+					"[COLOR_HIGHLIGHT_TEXT]No[ENDCOLOR]",
+					"[COLOR_HIGHLIGHT_TEXT][ICON_CAPITAL] Yes[ENDCOLOR]",
 				},
-				DefaultValue = 1,
+				DefaultValue = 2,
 				SortPriority = -94,
 			},
 		},
@@ -201,11 +207,12 @@ function ResolveBarrierSplit()
 	end
 	barrierSplitResolved = true;
 	local ops = Map.GetCustomOption(OPT_CENTER_SPLIT);
-	if ops == SPLIT_RANDOM then
-		barrierSplit = SPLIT_SNOW_V2 + Map.Rand(SPLIT_FROSTY - SPLIT_SNOW_V2, "Barrier Terrain Random");
+	if ops == SPLIT_MENU_RANDOM or ops == SPLIT_RANDOM then
+		local r = Map.Rand(8, "Barrier Terrain Random");
+		barrierSplit = SPLIT_SNOW_V2 + r;
 		print("Barrier Terrain random:", barrierSplit);
 	else
-		barrierSplit = ops;
+		barrierSplit = ops + 1;
 	end
 	return barrierSplit;
 end
@@ -254,7 +261,7 @@ function GetBarrierConfig()
 			mountainPct = 5,
 			hillPct = 20,
 			iceLakePermille = 0,
-			forestPct = 2,
+			forestPct = 0,
 			oasisPctOfFlat = 5,
 			chaoticMountains = true,
 		};
@@ -313,6 +320,30 @@ function GetBarrierConfig()
 			chaoticMountains = true,
 		};
 	end
+	if ops == SPLIT_TONGUE then
+		return {
+			kind = "tongue",
+			wrap = wrap,
+			mountainPct = 8,
+			hillPct = 22,
+			iceLakePermille = 0,
+			forestPct = 0,
+			oasisPctOfFlat = 0,
+			chaoticMountains = true,
+		};
+	end
+	if ops == SPLIT_SNAKY then
+		return {
+			kind = "snaky",
+			wrap = wrap,
+			mountainPct = 8,
+			hillPct = 22,
+			iceLakePermille = 0,
+			forestPct = 0,
+			oasisPctOfFlat = 0,
+			chaoticMountains = true,
+		};
+	end
 	return nil;
 end
 ------------------------------------------------------------------------------
@@ -332,6 +363,9 @@ function BarrierTerrainType(cfg)
 	if cfg.kind == "frosty" then
 		return TerrainTypes.TERRAIN_TUNDRA;
 	end
+	if cfg.kind == "tongue" or cfg.kind == "snaky" then
+		return TerrainTypes.TERRAIN_TUNDRA;
+	end
 	return TerrainTypes.TERRAIN_SNOW;
 end
 ------------------------------------------------------------------------------
@@ -344,6 +378,9 @@ function BarrierTransitionType(cfg)
 	end
 	if cfg.kind == "frosty" then
 		return TerrainTypes.TERRAIN_DESERT;
+	end
+	if cfg.kind == "tongue" or cfg.kind == "snaky" then
+		return TerrainTypes.TERRAIN_TUNDRA;
 	end
 	return TerrainTypes.TERRAIN_TUNDRA;
 end
@@ -401,6 +438,336 @@ end
 ------------------------------------------------------------------------------
 function IsSnowBarrier()
 	return GetBarrierConfig() ~= nil;
+end
+------------------------------------------------------------------------------
+function IsTongue()
+	local cfg = GetBarrierConfig();
+	return cfg ~= nil and (cfg.kind == "tongue" or cfg.kind == "snaky");
+end
+------------------------------------------------------------------------------
+function IsSnaky()
+	local cfg = GetBarrierConfig();
+	return cfg ~= nil and cfg.kind == "snaky";
+end
+------------------------------------------------------------------------------
+local tongueLineReady = false;
+local tongueS0 = 0;
+local tongueJungleDepth = nil;
+local snakyFrac = nil;
+local snakyAmp = nil;
+local tongueEconFrac = nil;
+local tongueEconFrac2 = nil;
+function TongueResetLine()
+	tongueLineReady = false;
+	tongueJungleDepth = nil;
+	snakyFrac = nil;
+	snakyAmp = nil;
+	tongueEconFrac = nil;
+	tongueEconFrac2 = nil;
+end
+------------------------------------------------------------------------------
+function TongueCubeS(col, row)
+	local q = col - math.floor(row / 2);
+	return 0 - q - row;
+end
+------------------------------------------------------------------------------
+function TongueEnsureLine()
+	if tongueLineReady then
+		return
+	end
+	local iW, iH = Map.GetGridSize();
+	local cx = math.floor((iW - 1) / 2);
+	local cy = math.floor((iH - 1) / 2);
+	tongueS0 = TongueCubeS(cx, cy);
+	tongueLineReady = true;
+end
+------------------------------------------------------------------------------
+function TongueSignedDist(x, y)
+	TongueEnsureLine();
+	return TongueCubeS(x, y) - tongueS0;
+end
+------------------------------------------------------------------------------
+function TongueFoldWest(x, y)
+	if DEF_MIRRORED ~= 1 then
+		return x, y
+	end
+	local iW, iH = Map.GetGridSize();
+	local mid = math.floor(iW / 2);
+	if x < mid then
+		return x, y
+	end
+	return iW - x - 1, iH - y - 1;
+end
+------------------------------------------------------------------------------
+function MirrorOwnsPlot(x, y, mirrored, iW)
+	if mirrored ~= true then
+		return true
+	end
+	if x <= iW * 0.5 then
+		return true
+	end
+	if IsTongue() == false then
+		return false
+	end
+	return TongueSignedDist(x, y) > 0
+end
+------------------------------------------------------------------------------
+function TongueNoGoWidth()
+	local wrapN, centerN = ResolveSnowWrapWidths();
+	if centerN < 1 then
+		return 1
+	end
+	return centerN;
+end
+------------------------------------------------------------------------------
+function TongueHillDist()
+	return 1
+end
+------------------------------------------------------------------------------
+function TongueMtnDist()
+	return 2
+end
+------------------------------------------------------------------------------
+function TongueGetJungleDepth()
+	if tongueJungleDepth == nil then
+		tongueJungleDepth = 2 + Map.Rand(3, "Tongue Jungle Depth");
+	end
+	return tongueJungleDepth;
+end
+------------------------------------------------------------------------------
+function TongueIsHomePlot(x, y)
+	if IsTongue() == false then
+		return true
+	end
+	local plot = Map.GetPlot(x, y);
+	if plot == nil or plot:IsWater() then
+		return false
+	end
+	if plot:GetPlotType() == PlotTypes.PLOT_MOUNTAIN then
+		return false
+	end
+	if plot:GetTerrainType() == TerrainTypes.TERRAIN_TUNDRA then
+		return false
+	end
+	if TongueSignedDist(x, y) <= 0 then
+		return false
+	end
+	return true
+end
+------------------------------------------------------------------------------
+function TongueResourcePlotOk(x, y)
+	if IsTongue() == false then
+		return true
+	end
+	local plot = Map.GetPlot(x, y);
+	if plot == nil then
+		return false
+	end
+	if plot:GetTerrainType() == TerrainTypes.TERRAIN_TUNDRA then
+		return false
+	end
+	if plot:GetPlotType() == PlotTypes.PLOT_MOUNTAIN then
+		return false
+	end
+	if TongueSignedDist(x, y) <= 0 then
+		return false
+	end
+	return true
+end
+------------------------------------------------------------------------------
+function FilterPlotIndexListToTongueHome(list, iW)
+	if IsTongue() == false or list == nil then
+		return list
+	end
+	local out = {};
+	local k = 1;
+	while k <= #list do
+		local i = list[k];
+		local x = (i - 1) % iW;
+		local y = math.floor((i - 1) / iW);
+		if TongueResourcePlotOk(x, y) then
+			table.insert(out, i);
+		end
+		k = k + 1;
+	end
+	return out
+end
+------------------------------------------------------------------------------
+function FilterTongueHomeLuxuryLists(lists)
+	if IsTongue() == false or lists == nil then
+		return lists
+	end
+	local iW = Map.GetGridSize();
+	local n = 1;
+	while lists[n] ~= nil do
+		lists[n] = FilterPlotIndexListToTongueHome(lists[n], iW);
+		n = n + 1;
+	end
+	return lists
+end
+------------------------------------------------------------------------------
+function FilterTongueHomeResourceLists(self)
+	if IsTongue() == false then
+		return
+	end
+	local iW = Map.GetGridSize();
+	local names = {
+		"coast_next_to_land_list", "marsh_list", "flood_plains_list",
+		"hills_open_list", "hills_covered_list", "hills_jungle_list", "hills_forest_list",
+		"jungle_flat_list", "forest_flat_list", "desert_flat_no_feature",
+		"plains_flat_no_feature", "dry_grass_flat_no_feature", "fresh_water_grass_flat_no_feature",
+		"tundra_flat_including_forests", "forest_flat_that_are_not_tundra",
+		"grass_flat_no_feature", "tundra_flat_no_feature", "snow_flat_list",
+		"hills_list", "land_list", "coast_list", "front_coast_list",
+		"marble_list", "extra_deer_list", "desert_wheat_list", "banana_list"
+	};
+	local n = 1;
+	while names[n] ~= nil do
+		local key = names[n];
+		self[key] = FilterPlotIndexListToTongueHome(self[key], iW);
+		n = n + 1;
+	end
+	self.global_luxury_plot_lists = {
+		self.coast_next_to_land_list,
+		self.marsh_list,
+		self.flood_plains_list,
+		self.hills_open_list,
+		self.hills_covered_list,
+		self.hills_jungle_list,
+		self.hills_forest_list,
+		self.jungle_flat_list,
+		self.forest_flat_list,
+		self.desert_flat_no_feature,
+		self.plains_flat_no_feature,
+		self.dry_grass_flat_no_feature,
+		self.fresh_water_grass_flat_no_feature,
+		self.tundra_flat_including_forests,
+		self.forest_flat_that_are_not_tundra,
+	};
+end
+------------------------------------------------------------------------------
+function TongueIsBarrierPlot(x, y)
+	if IsTongue() == false then
+		return false
+	end
+	return TongueIsHomePlot(x, y) == false
+end
+------------------------------------------------------------------------------
+function PlotRejectsNaturalWonder(x, y)
+	if IsTongue() == false then
+		return false
+	end
+	local plot = Map.GetPlot(x, y);
+	if plot == nil then
+		return true
+	end
+	if plot:GetTerrainType() == TerrainTypes.TERRAIN_TUNDRA then
+		return true
+	end
+	if TongueSignedDist(x, y) <= 0 then
+		return true
+	end
+	return false
+end
+------------------------------------------------------------------------------
+function TongueStartTooClose(x, y)
+	if IsTongue() == false then
+		return false
+	end
+	if TongueIsHomePlot(x, y) == false then
+		return true
+	end
+	local yy = y - 3;
+	while yy <= y + 3 do
+		local xx = x - 3;
+		while xx <= x + 3 do
+			if Map.PlotDistance(x, y, xx, yy) <= 3 then
+				local adj = Map.GetPlot(xx, yy);
+				if adj ~= nil and adj:GetTerrainType() == TerrainTypes.TERRAIN_TUNDRA then
+					return true
+				end
+			end
+			xx = xx + 1;
+		end
+		yy = yy + 1;
+	end
+	return false
+end
+------------------------------------------------------------------------------
+function TongueSkipMirrorDest(sx, sy, dx, dy)
+	if IsTongue() == false then
+		return false
+	end
+	local iW, iH = Map.GetGridSize();
+	if dy >= iH * 0.5 then
+		return false
+	end
+	if TongueSignedDist(dx, dy) > 0 and TongueSignedDist(sx, sy) <= 0 then
+		return true
+	end
+	return false
+end
+------------------------------------------------------------------------------
+function TongueCopyHomePastMidToPair(copyRes)
+	if DEF_MIRRORED ~= 1 then
+		return
+	end
+	if IsTongue() == false then
+		return
+	end
+	local iW, iH = Map.GetGridSize();
+	local mid = math.floor(iW / 2);
+	local y = 0;
+	while y < iH do
+		local x = mid;
+		while x < iW do
+			if TongueSignedDist(x, y) > 0 then
+				local plot = Map.GetPlot(x, y);
+				local mx = iW - x - 1;
+				local my = iH - y - 1;
+				local mp = Map.GetPlot(mx, my);
+				if plot ~= nil and mp ~= nil then
+					mp:SetPlotType(plot:GetPlotType(), false, false);
+					mp:SetTerrainType(plot:GetTerrainType(), false, false);
+					mp:SetFeatureType(plot:GetFeatureType(), -1);
+					if copyRes == true then
+						mp:SetResourceType(plot:GetResourceType(-1), plot:GetNumResource());
+						mp:SetImprovementType(plot:GetImprovementType());
+					end
+				end
+			end
+			x = x + 1;
+		end
+		y = y + 1;
+	end
+end
+------------------------------------------------------------------------------
+function TongueCopyWestToEast()
+	if DEF_MIRRORED ~= 1 then
+		return
+	end
+	local iW, iH = Map.GetGridSize();
+	local mid = math.floor(iW / 2);
+	local x = 0;
+	while x < mid do
+		local y = 0;
+		while y < iH do
+			local mx = iW - x - 1;
+			local my = iH - y - 1;
+			if TongueSkipMirrorDest(x, y, mx, my) == false then
+				local plot = Map.GetPlot(x, y);
+				local mp = Map.GetPlot(mx, my);
+				if plot ~= nil and mp ~= nil then
+					mp:SetPlotType(plot:GetPlotType(), false, false);
+					mp:SetTerrainType(plot:GetTerrainType(), false, false);
+					mp:SetFeatureType(plot:GetFeatureType(), -1);
+				end
+			end
+			y = y + 1;
+		end
+		x = x + 1;
+	end
+	TongueCopyHomePastMidToPair(false);
 end
 ------------------------------------------------------------------------------
 function GetSungodLuxuryIDs(asp)
@@ -552,11 +919,37 @@ function ApplyFrostyLuxuryWeights(self)
 	print("Frosty luxury weights: fur reserved for snow");
 end
 ------------------------------------------------------------------------------
+function ApplyTongueLuxuryWeights(self)
+	local cfg = GetBarrierConfig();
+	if cfg == nil or cfg.kind ~= "tongue" then
+		return
+	end
+	local jungle = {};
+	local function add(id, w)
+		if id ~= nil then
+			table.insert(jungle, {id, w});
+		end
+	end
+	add(self.banana_ID, 50);
+	add(self.cocoa_ID, 40);
+	add(self.citrus_ID, 40);
+	add(self.spices_ID, 30);
+	add(self.dye_ID, 30);
+	add(self.gems_ID, 25);
+	add(self.ivory_ID, 20);
+	add(self.silk_ID, 15);
+	if self.luxury_region_weights[2] ~= nil then
+		self.luxury_region_weights[2] = jungle;
+	end
+	print("Tongue luxury weights: jungle regions only");
+end
+------------------------------------------------------------------------------
 local InitLuxuryWeightsVanilla = AssignStartingPlots.__InitLuxuryWeights;
 function AssignStartingPlots:__InitLuxuryWeights()
 	InitLuxuryWeightsVanilla(self);
 	ApplyWastelandLuxuryWeights(self);
 	ApplyFrostyLuxuryWeights(self);
+	ApplyTongueLuxuryWeights(self);
 end
 ------------------------------------------------------------------------------
 local AssignLuxuryToRegionVanilla = AssignStartingPlots.AssignLuxuryToRegion;
@@ -761,6 +1154,15 @@ function AssignStartingPlots:ProcessResourceList(frequency, impact_table_number,
 				end
 				i = i + 1;
 			end
+		elseif cfg.kind == "tongue" then
+			local i = 1;
+			while resources_to_place[i] ~= nil do
+				if resources_to_place[i][1] == self.banana_ID then
+					frequency = frequency * 1.35;
+					break
+				end
+				i = i + 1;
+			end
 		elseif cfg.kind == "wasteland" then
 			local i = 1;
 			local isDeer = false;
@@ -850,6 +1252,33 @@ end
 local AddStrategicBalanceResourcesVanilla = AssignStartingPlots.AddStrategicBalanceResources;
 function AssignStartingPlots:AddStrategicBalanceResources(region_number)
 	AddStrategicBalanceResourcesVanilla(self, region_number);
+	if IsTongue() then
+		local start_point_data = self.startingPlots[region_number];
+		if start_point_data ~= nil then
+			local sx = start_point_data[1];
+			local sy = start_point_data[2];
+			local oilID = GameInfoTypes["RESOURCE_OIL"];
+			local alumID = GameInfoTypes["RESOURCE_ALUMINUM"];
+			local uranID = GameInfoTypes["RESOURCE_URANIUM"];
+			local yy = sy - 3;
+			while yy <= sy + 3 do
+				local xx = sx - 3;
+				while xx <= sx + 3 do
+					if Map.PlotDistance(sx, sy, xx, yy) <= 3 then
+						local plot = Map.GetPlot(xx, yy);
+						if plot ~= nil and plot:GetTerrainType() == TerrainTypes.TERRAIN_TUNDRA then
+							local res = plot:GetResourceType(-1);
+							if res ~= -1 and res ~= oilID and res ~= alumID and res ~= uranID then
+								plot:SetResourceType(-1);
+							end
+						end
+					end
+					xx = xx + 1;
+				end
+				yy = yy + 1;
+			end
+		end
+	end
 	local cfg = GetBarrierConfig();
 	if cfg == nil or cfg.kind ~= "peaks" then
 		return
@@ -1425,6 +1854,9 @@ function FindNearestStartOffEdge(sx, sy)
 					if cfg ~= nil and cfg.kind == "frosty" and plot:GetTerrainType() == TerrainTypes.TERRAIN_SNOW then
 						ok = false;
 					end
+					if ok and TongueStartTooClose(x, y) then
+						ok = false;
+					end
 					if ok then
 						local d = Map.PlotDistance(sx, sy, x, y);
 						if d < bestD then
@@ -1452,11 +1884,20 @@ function ClampAspStartsOffEdges(asp)
 		local sp = asp.startingPlots[r];
 		local sx = sp[1];
 		local sy = sp[2];
-		if sx ~= nil and sy ~= nil and StartYAllowed(sy, iH) == false then
-			local nx, ny = FindNearestStartOffEdge(sx, sy);
-			if nx ~= nil then
-				asp.startingPlots[r] = {nx, ny, 1};
-				print("Start moved off N/S edge region", r, "from", sx, sy, "to", nx, ny);
+		if sx ~= nil and sy ~= nil then
+			local needMove = false;
+			if StartYAllowed(sy, iH) == false then
+				needMove = true;
+			end
+			if TongueStartTooClose(sx, sy) then
+				needMove = true;
+			end
+			if needMove then
+				local nx, ny = FindNearestStartOffEdge(sx, sy);
+				if nx ~= nil then
+					asp.startingPlots[r] = {nx, ny, 1};
+					print("Start moved off edge/tongue region", r, "from", sx, sy, "to", nx, ny);
+				end
 			end
 		end
 		r = r + 1;
@@ -1476,11 +1917,11 @@ function ClampPlayerStartsOffEdges()
 			local plot = player:GetStartingPlot();
 			local sx = plot:GetX();
 			local sy = plot:GetY();
-			if StartYAllowed(sy, iH) == false then
+			if StartYAllowed(sy, iH) == false or TongueStartTooClose(sx, sy) then
 				local nx, ny = FindNearestStartOffEdge(sx, sy);
 				if nx ~= nil then
 					player:SetStartingPlot(Map.GetPlot(nx, ny));
-					print("Player start moved off N/S edge", i, "from", sx, sy, "to", nx, ny);
+					print("Player start moved off edge/tongue", i, "from", sx, sy, "to", nx, ny);
 				end
 			end
 		end
@@ -1506,8 +1947,18 @@ function AssignStartingPlots:EvaluateCandidatePlot(plotIndex, region_type)
 		if cfg ~= nil and cfg.kind == "frosty" and plot:GetTerrainType() == TerrainTypes.TERRAIN_SNOW then
 			return -200, false;
 		end
+		if TongueStartTooClose(x, y) then
+			return -200, false;
+		end
 	end
 	return EvaluateCandidatePlotVanilla(self, plotIndex, region_type);
+end
+local MeasureFertilityOfPlotVanilla = AssignStartingPlots.MeasureStartPlacementFertilityOfPlot;
+function AssignStartingPlots:MeasureStartPlacementFertilityOfPlot(x, y, checkForCoastalLand)
+	if TongueStartTooClose(x, y) then
+		return 0
+	end
+	return MeasureFertilityOfPlotVanilla(self, x, y, checkForCoastalLand);
 end
 local FindStartVanilla = AssignStartingPlots.FindStart;
 function AssignStartingPlots:FindStart(region_number)
@@ -1527,6 +1978,7 @@ function AssignStartingPlots:FindStart(region_number)
 					for rx = 0, iW - 1 do
 						local p = Map.GetPlot(rx, ry);
 						if p ~= nil and not p:IsWater() and p:GetPlotType() ~= PlotTypes.PLOT_MOUNTAIN and StartYAllowed(ry, iH) then
+							if TongueStartTooClose(rx, ry) == false then
 							local a = p:Area();
 							if a ~= nil and a:GetNumTiles() >= MIN_START_LANDMASS then
 								local d = Map.PlotDistance(sx, sy, rx, ry);
@@ -1535,6 +1987,7 @@ function AssignStartingPlots:FindStart(region_number)
 									bestX = rx;
 									bestY = ry;
 								end
+							end
 							end
 						end
 					end
@@ -1665,6 +2118,9 @@ function GetSnowWrapWaterBounds(iW)
 	local wrapHalf = wrapN / 2;
 	local centerHalf = centerN / 2;
 	local mid = math.floor(iW / 2);
+	if IsTongue() then
+		centerHalf = 0;
+	end
 	local minX = wrapHalf + 4;
 	local maxX = mid - centerHalf - 5;
 	return minX, maxX;
@@ -1724,12 +2180,54 @@ function WaterAllowedAtX(x)
 			return false
 		end
 	end
-	if centerHalf > 0 then
+	if centerHalf > 0 and IsTongue() == false then
 		if x >= (mid - centerHalf - 4) and x <= (mid + centerHalf - 1 + 4) then
 			return false
 		end
 	end
 	return true
+end
+------------------------------------------------------------------------------
+function WaterAllowedAtXY(x, y)
+	if WaterAllowedAtX(x) == false then
+		return false
+	end
+	if IsTongue() then
+		local wx, wy = TongueFoldWest(x, y);
+		local lim = TongueHillDist();
+		if IsSnaky() then
+			lim = 4;
+		end
+		if TongueSignedDist(wx, wy) <= lim then
+			return false
+		end
+	end
+	return true
+end
+------------------------------------------------------------------------------
+function SnakyInlandSeaSeedOk(x, y, iW, iH)
+	if WaterAllowedAtXY(x, y) == false then
+		return false
+	end
+	local d = TongueSignedDist(x, y);
+	if d <= 4 then
+		return false
+	end
+	local xN = 0;
+	if iW > 2 then
+		xN = x / (iW * 0.5);
+	end
+	local yN = 0;
+	if iH > 1 then
+		yN = y / (iH - 1);
+	end
+	if xN <= 0.72 and yN >= 0.08 and yN <= 0.92 then
+		return true
+	end
+	if d >= 5 and Map.Rand(100, "Snaky Fringe Sea") < 35 then
+		return true
+	end
+	return false
 end
 ------------------------------------------------------------------------------
 function ScrubWaterNearSnow()
@@ -1741,7 +2239,7 @@ function ScrubWaterNearSnow()
 	while y < iH do
 		local x = 0;
 		while x < iW do
-			if WaterAllowedAtX(x) == false then
+			if WaterAllowedAtXY(x, y) == false then
 				local plot = Map.GetPlot(x, y);
 				if plot ~= nil and plot:GetPlotType() == PlotTypes.PLOT_OCEAN then
 					plot:SetPlotType(PlotTypes.PLOT_LAND, false, false);
@@ -1765,7 +2263,7 @@ function GetSnowWrapColumns(iW)
 			table.insert(cols, x);
 		end
 	end
-	if centerN > 0 then
+	if centerN > 0 and IsTongue() == false then
 		local half = centerN / 2;
 		local mid = math.floor(iW / 2);
 		for x = mid - half, mid + half - 1 do
@@ -1784,7 +2282,7 @@ function GetSnowWrapTundraColumns(iW)
 		table.insert(cols, half);
 		table.insert(cols, iW - half - 1);
 	end
-	if centerN > 0 then
+	if centerN > 0 and IsTongue() == false then
 		local half = centerN / 2;
 		table.insert(cols, mid - half - 1);
 		table.insert(cols, mid + half);
@@ -2027,6 +2525,19 @@ function ShapeNoWrapBackstrip(plotTypes, iW, iH)
 		end
 		winY0 = iH - keepH;
 		winY1 = iH;
+	elseif IsSnaky() then
+		local keepH = math.floor(iH * 0.55);
+		if cutPct > 0 then
+			keepH = math.floor(iH * (100 - cutPct) / 100);
+		end
+		if keepH < 4 then
+			keepH = 4;
+		end
+		if keepH > iH then
+			keepH = iH;
+		end
+		winY0 = iH - keepH;
+		winY1 = iH;
 	elseif cutPct > 0 then
 		local keepH = math.floor(iH * (100 - cutPct) / 100);
 		if keepH < 4 then
@@ -2250,6 +2761,7 @@ end
 local ASP_GenerateLuxuryPlotListsAtCitySite = AssignStartingPlots.GenerateLuxuryPlotListsAtCitySite;
 function AssignStartingPlots:GenerateLuxuryPlotListsAtCitySite(x, y, radius, bRemoveFeatureIce)
 	local lists = ASP_GenerateLuxuryPlotListsAtCitySite(self, x, y, radius, bRemoveFeatureIce);
+	lists = FilterTongueHomeLuxuryLists(lists);
 	if bRemoveFeatureIce == true then
 		return lists
 	end
@@ -2261,6 +2773,7 @@ end
 local ASP_GenerateLuxuryPlotListsInRegion = AssignStartingPlots.GenerateLuxuryPlotListsInRegion;
 function AssignStartingPlots:GenerateLuxuryPlotListsInRegion(region_number)
 	local lists = ASP_GenerateLuxuryPlotListsInRegion(self, region_number);
+	lists = FilterTongueHomeLuxuryLists(lists);
 	local region_data_table = self.regionData[region_number];
 	if region_data_table == nil then
 		return lists
@@ -2280,6 +2793,7 @@ end
 local ASP_GenerateGlobalResourcePlotLists = AssignStartingPlots.GenerateGlobalResourcePlotLists;
 function AssignStartingPlots:GenerateGlobalResourcePlotLists()
 	ASP_GenerateGlobalResourcePlotLists(self);
+	FilterTongueHomeResourceLists(self);
 	local cfg = GetBarrierConfig();
 	if cfg ~= nil and cfg.kind == "wasteland" then
 		local iW, iH = Map.GetGridSize();
@@ -2359,6 +2873,9 @@ function AssignStartingPlots:ExaminePlotForNaturalWondersEligibility(x, y)
 	if ASP_ExaminePlotForNaturalWondersEligibility(self, x, y) == false then
 		return false
 	end
+	if PlotRejectsNaturalWonder(x, y) then
+		return false
+	end
 	if IsSnowBarrier() then
 		local iW = Map.GetGridSize();
 		local snowCols = GetSnowWrapColumns(iW);
@@ -2415,6 +2932,9 @@ function AssignStartingPlots:ExamineCandidatePlotForNaturalWondersEligibility(x,
 	if WonderTooCloseToCapital(x, y) then
 		return false
 	end
+	if PlotRejectsNaturalWonder(x, y) then
+		return false
+	end
 	return ASP_ExamineCandidatePlotForNaturalWondersEligibility(self, x, y);
 end
 ------------------------------------------------------------------------------
@@ -2431,7 +2951,7 @@ function AssignStartingPlots:AttemptToPlaceNaturalWonder(wonder_number, row_numb
 		local plotIndex = orig[i];
 		local x = (plotIndex - 1) % iW;
 		local y = (plotIndex - x - 1) / iW;
-		if WonderTooCloseToCapital(x, y) == false then
+		if WonderTooCloseToCapital(x, y) == false and PlotRejectsNaturalWonder(x, y) == false then
 			table.insert(kept, plotIndex);
 		end
 		i = i + 1;
@@ -2443,6 +2963,39 @@ function AssignStartingPlots:AttemptToPlaceNaturalWonder(wonder_number, row_numb
 	end
 	self.eligibility_lists[wonder_number] = orig;
 	return ok;
+end
+------------------------------------------------------------------------------
+function StripSeparatorNaturalWonders()
+	if IsTongue() == false then
+		return
+	end
+	local nwFeat = {};
+	for row in GameInfo.Features() do
+		if row.NaturalWonder then
+			nwFeat[row.ID] = true;
+		end
+	end
+	local iW, iH = Map.GetGridSize();
+	local n = 0;
+	local y = 0;
+	while y < iH do
+		local x = 0;
+		while x < iW do
+			if PlotRejectsNaturalWonder(x, y) then
+				local plot = Map.GetPlot(x, y);
+				if plot ~= nil then
+					local f = plot:GetFeatureType();
+					if nwFeat[f] == true then
+						plot:SetFeatureType(FeatureTypes.NO_FEATURE, -1);
+						n = n + 1;
+					end
+				end
+			end
+			x = x + 1;
+		end
+		y = y + 1;
+	end
+	print("Separator natural wonders stripped:", n);
 end
 ------------------------------------------------------------------------------
 function PurgeNearStartLakeFish()
@@ -2798,7 +3351,7 @@ function MultilayeredFractal:GeneratePlotsByRegion()
 			self.wholeworldPlotTypes[i_innerst_plot] = PlotTypes.PLOT_OCEAN;
 		end
 	end
-	if not IsSnowWrapX() then
+	if not IsSnowWrapX() and IsSnaky() == false then
 		for x = 0, 0 do
 			for y = 1, iH - 2 do
 				local i = y * iW + x + 1;
@@ -2938,7 +3491,9 @@ function MultilayeredFractal:GeneratePlotsByRegion()
 				PlacePeaksFrontClusters(self.wholeworldPlotTypes, iW, iH, x_wrap_west, mountainDensity);
 			end
 		elseif cfg.chaoticMountains then
-			PlaceChaoticFrontRidge(self.wholeworldPlotTypes, iW, iH, iW / 2 - 4, mountainDensity);
+			if cfg.kind ~= "tongue" and cfg.kind ~= "snaky" then
+				PlaceChaoticFrontRidge(self.wholeworldPlotTypes, iW, iH, iW / 2 - 4, mountainDensity);
+			end
 			if IsSnowWrapX() then
 				local x_wrap_west = GetSnowWrapLandMountainXs(iW);
 				PlaceChaoticFrontRidge(self.wholeworldPlotTypes, iW, iH, x_wrap_west, mountainDensity);
@@ -2999,7 +3554,7 @@ function MultilayeredFractal:GeneratePlotsByRegion()
 			else
 				polarCap = Map.Rand(3, "Snow Wrap Polar Cap");
 			end
-			if IsExploBalance() or cfg.kind == "frosty" then
+			if IsExploBalance() or cfg.kind == "frosty" or IsTongue() then
 				polarCap = 0;
 			end
 			if polarCap == 0 then
@@ -3135,7 +3690,13 @@ function MultilayeredFractal:GeneratePlotsByRegion()
 			maxY = iH - 1 - (polarInland + 2);
 		end
 		local function inLakeRect(x, y)
-			return x >= minX and x <= maxX and y >= minY and y <= maxY;
+			if x < minX or x > maxX or y < minY or y > maxY then
+				return false
+			end
+			if IsTongue() and WaterAllowedAtXY(x, y) == false then
+				return false
+			end
+			return true
 		end
 		local function neighborsFit(x, y)
 			for _, d in ipairs(hexNeighbors(x, y)) do
@@ -3152,7 +3713,11 @@ function MultilayeredFractal:GeneratePlotsByRegion()
 				maxX = lakeMaxX;
 				nBodies = 2 + Map.Rand(2, "Snow Wrap Lake Count");
 			end
-			if UsesExploCoastShape() then
+			if cfg.kind == "snaky" then
+				-- No backcoast: aim for enough water that sea lux/fish land near ~11-14 after CapSeaResources.
+				nBodies = 2 + Map.Rand(2, "Snaky Inland Seas");
+				minX = 2;
+			elseif UsesExploCoastShape() then
 				local cutIgnored, seas = ResolveExploBackCoastPlan();
 				nBodies = seas;
 			elseif cfg.kind == "frosty" then
@@ -3167,29 +3732,36 @@ function MultilayeredFractal:GeneratePlotsByRegion()
 				if cfg.kind == "desert" then
 					lakeSize = 5 + Map.Rand(8, "Snow Wrap Lake Size");
 					circular = (Map.Rand(4, "Snow Wrap Lake Shape") == 0);
+				elseif cfg.kind == "snaky" then
+					lakeSize = 11 + Map.Rand(8, "Snaky Inland Sea Size");
+					circular = (Map.Rand(3, "Snaky Inland Sea Shape") > 0);
 				end
 				local wantIsland = circular and lakeSize >= 6 and (Map.Rand(2, "Snow Wrap Lake Island") == 0);
 				local seedX, seedY;
-				for attempt = 1, 40 do
+				for attempt = 1, 80 do
 					local tx = minX + Map.Rand(maxX - minX + 1, "Snow Wrap Lake SeedX");
 					local ty = minY + Map.Rand(maxY - minY + 1, "Snow Wrap Lake SeedY");
 					local tidx = ty * iW + tx + 1;
 					if self.wholeworldPlotTypes[tidx] ~= PlotTypes.PLOT_OCEAN then
-						if (not wantIsland) or neighborsFit(tx, ty) then
-							seedX, seedY = tx, ty;
-							break
+						if cfg.kind ~= "snaky" or SnakyInlandSeaSeedOk(tx, ty, iW, iH) then
+							if (not wantIsland) or neighborsFit(tx, ty) then
+								seedX, seedY = tx, ty;
+								break
+							end
 						end
 					end
 				end
 				if seedX == nil and wantIsland then
 					wantIsland = false;
-					for attempt = 1, 40 do
+					for attempt = 1, 80 do
 						local tx = minX + Map.Rand(maxX - minX + 1, "Snow Wrap Lake SeedX");
 						local ty = minY + Map.Rand(maxY - minY + 1, "Snow Wrap Lake SeedY");
 						local tidx = ty * iW + tx + 1;
 						if self.wholeworldPlotTypes[tidx] ~= PlotTypes.PLOT_OCEAN then
-							seedX, seedY = tx, ty;
-							break
+							if cfg.kind ~= "snaky" or SnakyInlandSeaSeedOk(tx, ty, iW, iH) then
+								seedX, seedY = tx, ty;
+								break
+							end
 						end
 					end
 				end
@@ -3250,6 +3822,20 @@ function MultilayeredFractal:GeneratePlotsByRegion()
 				end
 			end
 		end
+		if IsSnaky() and IsSnowNoWrap() then
+			local fy = 0;
+			while fy < iH do
+				local fx = 0;
+				while fx <= 1 do
+					local fi = fy * iW + fx + 1;
+					if self.wholeworldPlotTypes[fi] == PlotTypes.PLOT_OCEAN then
+						self.wholeworldPlotTypes[fi] = PlotTypes.PLOT_LAND;
+					end
+					fx = fx + 1;
+				end
+				fy = fy + 1;
+			end
+		end
 		for y = 0, iH - 1 do
 			for x = 0, math.floor(iW / 2) - 1 do
 				if self.wholeworldPlotTypes[y * iW + x + 1] == PlotTypes.PLOT_OCEAN then
@@ -3265,7 +3851,7 @@ function MultilayeredFractal:GeneratePlotsByRegion()
 			self.wholeworldPlotTypes[my * iW + mx + 1] = self.wholeworldPlotTypes[p[2] * iW + p[1] + 1];
 		end
 	end
-	if IsSnowNoWrap() then
+	if IsSnowNoWrap() and IsSnaky() == false then
 		ShapeNoWrapBackstrip(self.wholeworldPlotTypes, iW, iH);
 	end
 	FrostyApplySaltWater(self.wholeworldPlotTypes, iW, iH);
@@ -3401,11 +3987,13 @@ function GeneratePlotTypes()
 			fLo = iW / 2 - 6;
 			fHi = iW / 2 + 5;
 			foothillChance = 50;
-		elseif cfg ~= nil and cfg.chaoticMountains then
+		elseif cfg ~= nil and cfg.chaoticMountains and IsTongue() == false then
 			fLo = iW / 2 - 7;
 			fHi = iW / 2 + 6;
 		end
-		applyFoothills(fLo, fHi, foothillChance)
+		if IsTongue() == false then
+			applyFoothills(fLo, fHi, foothillChance)
+		end
 		if IsSnowWrapX() then
 			local x_wrap_west, x_wrap_east = GetSnowWrapLandMountainXs(iW);
 			local wPad = 1;
@@ -3480,6 +4068,14 @@ function GenerateTerrain()
 		args.fGrassLatitude = 0.38;
 		args.fDesertBottomLatitude = 1.1;
 		args.fDesertTopLatitude = 1.1;
+	elseif cfg ~= nil and (cfg.kind == "tongue" or cfg.kind == "snaky") then
+		args.fSnowLatitude = 1.1;
+		args.fTundraLatitude = 1.1;
+		args.iDesertPercent = 0;
+		args.iPlainsPercent = 45;
+		args.fGrassLatitude = 0.55;
+		args.fDesertBottomLatitude = 1.1;
+		args.fDesertTopLatitude = 1.1;
 	end
 	local terraingen = TerrainGenerator.Create(args);
 
@@ -3490,6 +4086,8 @@ function GenerateTerrain()
 	AddMireBands();
 	AddPeaksLayout();
 	AddFrostyLayout();
+	AddTongueLayout();
+	AddSnakyLayout();
 	WeeveeDbg("GenerateTerrain done");
 end
 ------------------------------------------------------------------------------
@@ -3507,7 +4105,7 @@ end
 ------------------------------------------------------------------------------
 function FeatureGenerator:AddJunglesAtPlot(plot, iX, iY, lat)
 	local cfg = GetBarrierConfig();
-	if cfg ~= nil and (cfg.kind == "wetland" or cfg.kind == "peaks" or cfg.kind == "frosty") then
+	if cfg ~= nil and (cfg.kind == "wetland" or cfg.kind == "peaks" or cfg.kind == "frosty" or cfg.kind == "tongue" or cfg.kind == "snaky") then
 		return
 	end
 	local jungle_height = self.jungles:GetHeight(iX, iY);
@@ -3520,7 +4118,7 @@ end
 ------------------------------------------------------------------------------
 function FeatureGenerator:AddMarshAtPlot(plot, iX, iY, lat)
 	local cfg = GetBarrierConfig();
-	if cfg ~= nil and (cfg.kind == "wetland" or cfg.kind == "peaks" or cfg.kind == "frosty") then
+	if cfg ~= nil and (cfg.kind == "wetland" or cfg.kind == "peaks" or cfg.kind == "frosty" or cfg.kind == "tongue" or cfg.kind == "snaky") then
 		return
 	end
 	local marsh_height = self.marsh:GetHeight(iX, iY)
@@ -3536,11 +4134,21 @@ function FeatureGenerator:AddForestsAtPlot(plot, iX, iY, lat)
 	if cfg ~= nil and cfg.kind == "wetland" then
 		return
 	end
+	if cfg ~= nil and cfg.kind == "desert" then
+		local iW = Map.GetGridSize();
+		local skip = FillMireSkip(iW);
+		if skip[iX] == true then
+			return
+		end
+	end
 	if cfg ~= nil and cfg.kind == "frosty" then
 		local t = plot:GetTerrainType();
 		if t == TerrainTypes.TERRAIN_SNOW or t == TerrainTypes.TERRAIN_TUNDRA then
 			return
 		end
+	end
+	if cfg ~= nil and (cfg.kind == "tongue" or cfg.kind == "snaky") then
+		return
 	end
 	if cfg ~= nil and cfg.kind == "peaks" then
 		local iW = Map.GetGridSize();
@@ -3614,7 +4222,7 @@ end
 function FeatureGenerator:AdjustTerrainTypes()
 	local cfg = GetBarrierConfig();
 	local softenArctic = true;
-	if cfg ~= nil and (cfg.kind == "wasteland" or cfg.kind == "wetland" or cfg.kind == "peaks" or cfg.kind == "frosty") then
+	if cfg ~= nil and (cfg.kind == "wasteland" or cfg.kind == "wetland" or cfg.kind == "peaks" or cfg.kind == "frosty" or cfg.kind == "tongue" or cfg.kind == "snaky") then
 		softenArctic = false;
 	end
 	local width = self.iGridW - 1;
@@ -3659,7 +4267,7 @@ function AddLakes()
 					if r == 0 then
 						local allow = true;
 						if IsSnowBarrier() then
-							if WaterAllowedAtX(plot:GetX()) == false then
+							if WaterAllowedAtXY(plot:GetX(), plot:GetY()) == false then
 								allow = false;
 							end
 						end
@@ -3674,6 +4282,27 @@ function AddLakes()
 		end
 	end
 	ScrubWaterNearSnow();
+	if IsSnaky() and IsSnowNoWrap() then
+		local iWf, iH = Map.GetGridSize();
+		local y = 0;
+		while y < iH do
+			local x = 0;
+			while x <= 1 do
+				local plot = Map.GetPlot(x, y);
+				if plot ~= nil and plot:GetPlotType() == PlotTypes.PLOT_OCEAN then
+					plot:SetPlotType(PlotTypes.PLOT_LAND, false, false);
+					plot:SetTerrainType(TerrainTypes.TERRAIN_PLAINS, false, false);
+				end
+				local ep = Map.GetPlot(iWf - 1 - x, y);
+				if ep ~= nil and ep:GetPlotType() == PlotTypes.PLOT_OCEAN then
+					ep:SetPlotType(PlotTypes.PLOT_LAND, false, false);
+					ep:SetTerrainType(TerrainTypes.TERRAIN_PLAINS, false, false);
+				end
+				x = x + 1;
+			end
+			y = y + 1;
+		end
+	end
 	WeeveeDbg("AddLakes scrub done n=" .. tostring(numLakesAdded));
 	if numLakesAdded > 0 then
 		print(tostring(numLakesAdded).." lakes added")
@@ -4033,7 +4662,7 @@ function AddWetlandRiverDesert()
 	while y < iH do
 		local x = 0;
 		while x < iW do
-			if skip[x] ~= true and ((not mirrored) or (x <= iW * 0.5)) then
+			if skip[x] ~= true and MirrorOwnsPlot(x, y, mirrored, iW) then
 				local plot = Map.GetPlot(x, y);
 				if plot ~= nil
 					and plot:GetPlotType() == PlotTypes.PLOT_LAND
@@ -4153,6 +4782,12 @@ function AddFeatures()
 		args.iForestPercent = 28;
 		args.fMarshPercent = 0;
 		args.iOasisPercent = 0;
+	elseif cfg ~= nil and (cfg.kind == "tongue" or cfg.kind == "snaky") then
+		args.iJunglePercent = 0;
+		args.iJungleFactor = 5;
+		args.iForestPercent = 0;
+		args.fMarshPercent = 0;
+		args.iOasisPercent = 0;
 	end
 	local featuregen = FeatureGenerator.Create(args);
 
@@ -4166,6 +4801,8 @@ function AddFeatures()
 	AddPeaksBackCoastForest();
 	AddFrostyForests();
 	AddFrostyIce();
+	AddTongueFeatures();
+	AddSnakyFeatures();
 end
 ------------------------------------------------------------------------------
 ------------------------------------------------------------------------------
@@ -4635,6 +5272,8 @@ function AddRivers()
 				-- Plot in wrap-front buffer, ignore it.
 			elseif snowRiverSkip[current_x] then
 				-- Plot in buffer zone, ignore it.
+			elseif TongueIsBarrierPlot(current_x, current_y) then
+				-- Plot in tongue barrier, ignore it.
 			elseif (not plot:IsWater()) then
 				local peaksOk = true;
 				if peaksRivers then
@@ -4805,12 +5444,23 @@ function AssignStartingPlots:GenerateRegions(args)
 				backPad = 0;
 			end
 			self.inhabited_WestX = setforward + backPad;
+			if IsTongue() then
+				centerHalf = 0;
+			end
 			self.inhabited_Width = (mid - centerHalf) - setback - 1 - self.inhabited_WestX + 1;
 			local cfgR = GetBarrierConfig();
 			if cfgR ~= nil and cfgR.kind == "frosty" then
 				local snowY0 = math.floor((iH - 1) * 0.58);
 				if snowY0 > self.inhabited_SouthY + 6 then
 					self.inhabited_Height = snowY0 - self.inhabited_SouthY;
+				end
+			elseif IsTongue() then
+				local keep = math.floor(self.inhabited_Height * 0.62);
+				if keep < 8 then
+					keep = 8;
+				end
+				if keep < self.inhabited_Height then
+					self.inhabited_Height = keep;
 				end
 			end
 		end
@@ -4834,12 +5484,25 @@ function AssignStartingPlots:GenerateRegions(args)
 			local wrapHalf = wrapN / 2;
 			local centerHalf = centerN / 2;
 			local mid = math.floor(iW / 2);
+			if IsTongue() then
+				centerHalf = 0;
+			end
 			self.inhabited_WestX = (mid + centerHalf) + setback;
 			local lastEast = iW - setforward - 1;
 			if wrapHalf > 1 then
 				lastEast = iW - setforward - wrapHalf;
 			end
 			self.inhabited_Width = lastEast - self.inhabited_WestX + 1;
+			if IsTongue() then
+				local keep = math.floor(self.inhabited_Height * 0.62);
+				if keep < 8 then
+					keep = 8;
+				end
+				if keep < self.inhabited_Height then
+					self.inhabited_SouthY = self.inhabited_SouthY + (self.inhabited_Height - keep);
+					self.inhabited_Height = keep;
+				end
+			end
 		end
 		-- Obtain "Start Placement Fertility" inside the rectangle.
 		-- Data returned is: fertility table, sum of all fertility, plot count.
@@ -5661,6 +6324,1296 @@ function AddFrostyLayout()
 	WeeveeDbg("AddFrostyLayout done");
 end
 ------------------------------------------------------------------------------
+function TongueEnsureEconFrac()
+	if tongueEconFrac ~= nil then
+		return
+	end
+	local iW, iH = Map.GetGridSize();
+	tongueEconFrac = Fractal.Create(iW, iH, 5, Map.GetFractalFlags(), -1, -1);
+	tongueEconFrac2 = Fractal.Create(iW, iH, 4, Map.GetFractalFlags(), -1, -1);
+end
+------------------------------------------------------------------------------
+function TongueEconNoise(x, y, which)
+	TongueEnsureEconFrac();
+	local frac = tongueEconFrac;
+	if which == 2 then
+		frac = tongueEconFrac2;
+	end
+	local hLo = frac:GetHeight(12);
+	local hHi = frac:GetHeight(88);
+	if hHi <= hLo then
+		return 0
+	end
+	return ((frac:GetHeight(x, y) - hLo) / (hHi - hLo) - 0.5) * 2;
+end
+------------------------------------------------------------------------------
+function TongueEconKind(dist, x, y, jDepth, forestDepth)
+	local jCut = jDepth + TongueEconNoise(x, y, 1) * 2.4;
+	if jCut < 1.2 then
+		jCut = 1.2;
+	end
+	local fCut = jCut + forestDepth + TongueEconNoise(x, y, 2) * 2.2;
+	if dist <= jCut then
+		return 1
+	end
+	if dist <= fCut then
+		return 2
+	end
+	return 3
+end
+------------------------------------------------------------------------------
+function EconBandBleed(band, iW, iH, skip, mirrored)
+	local pass = 1;
+	while pass <= 2 do
+		local toJ = {};
+		local toF = {};
+		local toP = {};
+		local y = 0;
+		while y < iH do
+			local x = 0;
+			while x < iW do
+				if skip[x] ~= true and MirrorOwnsPlot(x, y, mirrored, iW) then
+					local i = y * iW + x + 1;
+					local b = band[i];
+					if b == 1 or b == 2 or b == 3 then
+						local dirs = FrostyHexNeighbors(x, y);
+						local di = 1;
+						while di <= 6 do
+							local nx = x + dirs[di][1];
+							local ny = y + dirs[di][2];
+							local np = Map.GetPlot(nx, ny);
+							if np ~= nil and skip[nx] ~= true and ((not mirrored) or (nx <= iW * 0.5)) then
+								if np:IsWater() == false and np:GetTerrainType() ~= TerrainTypes.TERRAIN_TUNDRA then
+									local ai = ny * iW + nx + 1;
+									local ab = band[ai];
+									if b == 1 and ab == 2 then
+										if Map.Rand(100, "Econ Jungle Bleed") < 38 then
+											toJ[ai] = true;
+										end
+									elseif b == 2 and ab == 3 then
+										if Map.Rand(100, "Econ Forest Bleed") < 34 then
+											toF[ai] = true;
+										end
+									elseif b == 2 and ab == 1 then
+										if Map.Rand(100, "Econ Jungle Back") < 16 then
+											toF[ai] = true;
+										end
+									elseif b == 3 and ab == 2 then
+										if Map.Rand(100, "Econ Plains Bleed") < 22 then
+											toP[ai] = true;
+										end
+									end
+								end
+							end
+							di = di + 1;
+						end
+					end
+				end
+				x = x + 1;
+			end
+			y = y + 1;
+		end
+		local i, _;
+		for i, _ in pairs(toJ) do
+			if toF[i] == nil and toP[i] == nil and band[i] == 2 then
+				band[i] = 1;
+			end
+		end
+		for i, _ in pairs(toF) do
+			if toJ[i] == nil and toP[i] == nil then
+				if band[i] == 3 or band[i] == 1 then
+					band[i] = 2;
+				end
+			end
+		end
+		for i, _ in pairs(toP) do
+			if toJ[i] == nil and toF[i] == nil and band[i] == 2 then
+				band[i] = 3;
+			end
+		end
+		pass = pass + 1;
+	end
+end
+------------------------------------------------------------------------------
+function PaintEconBands(band, iW, iH, skip, mirrored)
+	TongueEnsureEconFrac();
+	local y = 0;
+	while y < iH do
+		local x = 0;
+		while x < iW do
+			if skip[x] ~= true and MirrorOwnsPlot(x, y, mirrored, iW) then
+				local i = y * iW + x + 1;
+				local b = band[i];
+				local plot = Map.GetPlot(x, y);
+				if plot ~= nil and plot:IsWater() == false and plot:GetTerrainType() ~= TerrainTypes.TERRAIN_TUNDRA then
+					if plot:GetPlotType() ~= PlotTypes.PLOT_MOUNTAIN then
+						if b == 1 then
+							plot:SetTerrainType(TerrainTypes.TERRAIN_PLAINS, false, false);
+							plot:SetFeatureType(FeatureTypes.FEATURE_JUNGLE, -1);
+						elseif b == 2 then
+							plot:SetTerrainType(TerrainTypes.TERRAIN_GRASS, false, false);
+							plot:SetFeatureType(FeatureTypes.NO_FEATURE, -1);
+						elseif b == 3 then
+							plot:SetTerrainType(TerrainTypes.TERRAIN_PLAINS, false, false);
+							plot:SetFeatureType(FeatureTypes.NO_FEATURE, -1);
+						end
+					end
+				end
+			end
+			x = x + 1;
+		end
+		y = y + 1;
+	end
+	local forestCut = tongueEconFrac2:GetHeight(38);
+	y = 0;
+	while y < iH do
+		local x = 0;
+		while x < iW do
+			if skip[x] ~= true and MirrorOwnsPlot(x, y, mirrored, iW) then
+				local i = y * iW + x + 1;
+				if band[i] == 2 then
+					local plot = Map.GetPlot(x, y);
+					if plot ~= nil and plot:GetPlotType() ~= PlotTypes.PLOT_MOUNTAIN and plot:GetFeatureType() == FeatureTypes.NO_FEATURE then
+						if tongueEconFrac2:GetHeight(x, y) >= forestCut then
+							if Map.Rand(100, "Econ Forest Clump") < 72 then
+								plot:SetFeatureType(FeatureTypes.FEATURE_FOREST, -1);
+							end
+						elseif Map.Rand(100, "Econ Forest Speck") < 16 then
+							plot:SetFeatureType(FeatureTypes.FEATURE_FOREST, -1);
+						end
+					end
+				end
+			end
+			x = x + 1;
+		end
+		y = y + 1;
+	end
+	y = 0;
+	while y < iH do
+		local x = 0;
+		while x < iW do
+			if skip[x] ~= true and MirrorOwnsPlot(x, y, mirrored, iW) then
+				local i = y * iW + x + 1;
+				local plot = Map.GetPlot(x, y);
+				if plot ~= nil and plot:GetPlotType() ~= PlotTypes.PLOT_MOUNTAIN and plot:GetFeatureType() == FeatureTypes.NO_FEATURE then
+					local nJ = 0;
+					local nF = 0;
+					local dirs = FrostyHexNeighbors(x, y);
+					local di = 1;
+					while di <= 6 do
+						local np = Map.GetPlot(x + dirs[di][1], y + dirs[di][2]);
+						if np ~= nil then
+							if np:GetFeatureType() == FeatureTypes.FEATURE_JUNGLE then
+								nJ = nJ + 1;
+							elseif np:GetFeatureType() == FeatureTypes.FEATURE_FOREST then
+								nF = nF + 1;
+							end
+						end
+						di = di + 1;
+					end
+					if band[i] == 1 and nJ >= 2 then
+						plot:SetTerrainType(TerrainTypes.TERRAIN_PLAINS, false, false);
+						plot:SetFeatureType(FeatureTypes.FEATURE_JUNGLE, -1);
+					elseif band[i] == 2 and nF >= 2 then
+						plot:SetTerrainType(TerrainTypes.TERRAIN_GRASS, false, false);
+						plot:SetFeatureType(FeatureTypes.FEATURE_FOREST, -1);
+					end
+				end
+			end
+			x = x + 1;
+		end
+		y = y + 1;
+	end
+end
+------------------------------------------------------------------------------
+function SnakyTundraDistField(iW, iH)
+	local dist = {};
+	local qx = {};
+	local qy = {};
+	local y = 0;
+	while y < iH do
+		local x = 0;
+		while x < iW do
+			local k = y * iW + x;
+			dist[k] = 999;
+			local plot = Map.GetPlot(x, y);
+			if plot ~= nil and plot:GetTerrainType() == TerrainTypes.TERRAIN_TUNDRA then
+				dist[k] = 0;
+				table.insert(qx, x);
+				table.insert(qy, y);
+			end
+			x = x + 1;
+		end
+		y = y + 1;
+	end
+	local qi = 1;
+	while qi <= #qx do
+		local cx = qx[qi];
+		local cy = qy[qi];
+		local cd = dist[cy * iW + cx];
+		local dirs = FrostyHexNeighbors(cx, cy);
+		local di = 1;
+		while di <= 6 do
+			local nx = cx + dirs[di][1];
+			local ny = cy + dirs[di][2];
+			if ny >= 0 and ny < iH and nx >= 0 and nx < iW then
+				local np = Map.GetPlot(nx, ny);
+				if np ~= nil and np:IsWater() == false then
+					local k = ny * iW + nx;
+					local nd = cd + 1;
+					if nd < dist[k] then
+						dist[k] = nd;
+						table.insert(qx, nx);
+						table.insert(qy, ny);
+					end
+				end
+			end
+			di = di + 1;
+		end
+		qi = qi + 1;
+	end
+	return dist
+end
+------------------------------------------------------------------------------
+function HexNearFeature(x, y, feat, maxd)
+	local yy = y - maxd;
+	while yy <= y + maxd do
+		local xx = x - maxd;
+		while xx <= x + maxd do
+			if Map.PlotDistance(x, y, xx, yy) <= maxd then
+				local p = Map.GetPlot(xx, yy);
+				if p ~= nil and p:GetFeatureType() == feat then
+					return true
+				end
+			end
+			xx = xx + 1;
+		end
+		yy = yy + 1;
+	end
+	return false
+end
+------------------------------------------------------------------------------
+function SnakyForestWanted(x, y, iW, iH)
+	local xN = 0;
+	if iW > 2 then
+		xN = x / (iW * 0.5);
+	end
+	local yN = 0;
+	if iH > 1 then
+		yN = y / (iH - 1);
+	end
+	local n = TongueEconNoise(x, y, 2);
+	if xN <= 0.26 + n * 0.10 and yN <= 0.58 + n * 0.08 then
+		return true
+	end
+	if xN <= 0.16 + n * 0.05 and yN <= 0.84 then
+		return true
+	end
+	if n > 0.12 and xN <= 0.46 + n * 0.10 and yN >= 0.10 and yN <= 0.54 then
+		return true
+	end
+	return false
+end
+------------------------------------------------------------------------------
+function SnakyPeakPlotUsable(plot, skip, mirrored, iW, iH)
+	if PeakPlotUsable(plot, skip, mirrored, iW, nil) == false then
+		return false
+	end
+	if plot:GetTerrainType() == TerrainTypes.TERRAIN_TUNDRA then
+		return false
+	end
+	if plot:GetFeatureType() == FeatureTypes.FEATURE_JUNGLE then
+		return false
+	end
+	local x = plot:GetX();
+	local y = plot:GetY();
+	if SnakyForestWanted(x, y, iW, iH) == false then
+		return false
+	end
+	local xN = 0;
+	if iW > 2 then
+		xN = x / (iW * 0.5);
+	end
+	local yN = 0;
+	if iH > 1 then
+		yN = y / (iH - 1);
+	end
+	if xN > 0.28 or yN > 0.52 then
+		return false
+	end
+	return true
+end
+------------------------------------------------------------------------------
+function SnakyPlaceForestPeaks(iW, iH, skip, mirrored)
+	local nWant = 1;
+	if Map.Rand(100, "Snaky Extra Peak") < 22 then
+		nWant = 2;
+	end
+	local nPlaced = 0;
+	local tries = 0;
+	while nPlaced < nWant and tries < 60 do
+		tries = tries + 1;
+		local sx = Map.Rand(math.floor(iW / 2), "Snaky Peak X");
+		local sy = Map.Rand(iH, "Snaky Peak Y");
+		if skip[sx] ~= true and ((not mirrored) or (sx <= iW * 0.5)) then
+			local seed = Map.GetPlot(sx, sy);
+			if seed ~= nil and SnakyPeakPlotUsable(seed, skip, mirrored, iW, iH) then
+				if PeakMassifClear(sx, sy, 5, iW, iH, skip, mirrored) then
+					local q = {};
+					table.insert(q, seed);
+					seed:SetPlotType(PlotTypes.PLOT_MOUNTAIN, false, false);
+					seed:SetFeatureType(FeatureTypes.NO_FEATURE, -1);
+					local target = PeakBlobTargetSize();
+					local qi = 1;
+					local grown = 1;
+					while qi <= #q and grown < target do
+						local p = q[qi];
+						qi = qi + 1;
+						local d0 = Map.Rand(DirectionTypes.NUM_DIRECTION_TYPES, "Snaky Peak Dir");
+						local k = 0;
+						while k < DirectionTypes.NUM_DIRECTION_TYPES and grown < target do
+							local d = d0 + k;
+							if d >= DirectionTypes.NUM_DIRECTION_TYPES then
+								d = d - DirectionTypes.NUM_DIRECTION_TYPES;
+							end
+							local adj = PlotDirNoXWrap(p:GetX(), p:GetY(), d);
+							if adj ~= nil then
+								local cand = adj;
+								if Map.Rand(100, "Snaky Peak Skip") < 26 then
+									local far = PlotDirNoXWrap(adj:GetX(), adj:GetY(), d);
+									if far ~= nil then
+										cand = far;
+									end
+								end
+								if SnakyPeakPlotUsable(cand, skip, mirrored, iW, iH) then
+									if PeakTouchesForeignMountain(cand, q) == false then
+										local packed = PeakCountBlobNeighbors(cand, q);
+										local allow = true;
+										if packed >= 3 and Map.Rand(100, "Snaky Peak Pack") >= 20 then
+											allow = false;
+										end
+										if allow and Map.Rand(100, "Snaky Peak Grow") < 76 then
+											cand:SetPlotType(PlotTypes.PLOT_MOUNTAIN, false, false);
+											cand:SetFeatureType(FeatureTypes.NO_FEATURE, -1);
+											table.insert(q, cand);
+											grown = grown + 1;
+										end
+									end
+								end
+							end
+							k = k + 1;
+						end
+					end
+					nPlaced = nPlaced + 1;
+				end
+			end
+		end
+	end
+	print("Snaky forest peaks:", nPlaced);
+end
+------------------------------------------------------------------------------
+function AddTongueLayout()
+	local cfg = GetBarrierConfig();
+	if cfg == nil or cfg.kind ~= "tongue" then
+		return
+	end
+	WeeveeDbg("AddTongueLayout");
+	local iW, iH = Map.GetGridSize();
+	local skip = FillMireSkip(iW);
+	local mirrored = (DEF_MIRRORED == 1);
+	local nogo = TongueNoGoWidth();
+	local hillD = TongueHillDist();
+	local mtnD = TongueMtnDist();
+	local jDepth = TongueGetJungleDepth();
+	local mtnOps = Map.GetCustomOption(OPT_FRONT_MOUNTAIN);
+	local cliffPct = 72 + 4 * mtnOps;
+	if cliffPct > 96 then
+		cliffPct = 96;
+	end
+	print("Tongue nogo", nogo, "hill", hillD, "mtn", mtnD, "jungle", jDepth);
+	local y = 0;
+	while y < iH do
+		local x = 0;
+		while x < iW do
+			if skip[x] ~= true and MirrorOwnsPlot(x, y, mirrored, iW) then
+				local plot = Map.GetPlot(x, y);
+				if plot ~= nil and plot:IsWater() == false then
+					local d = TongueSignedDist(x, y);
+					if d <= 0 then
+						plot:SetFeatureType(FeatureTypes.NO_FEATURE, -1);
+						plot:SetTerrainType(TerrainTypes.TERRAIN_TUNDRA, false, false);
+						plot:SetPlotType(PlotTypes.PLOT_LAND, false, false);
+					elseif d == hillD then
+						plot:SetFeatureType(FeatureTypes.NO_FEATURE, -1);
+						plot:SetTerrainType(TerrainTypes.TERRAIN_TUNDRA, false, false);
+						if Map.Rand(100, "Tongue Hill Col") < 88 then
+							plot:SetPlotType(PlotTypes.PLOT_HILLS, false, false);
+						else
+							plot:SetPlotType(PlotTypes.PLOT_LAND, false, false);
+						end
+					elseif d == mtnD then
+						plot:SetFeatureType(FeatureTypes.NO_FEATURE, -1);
+						plot:SetTerrainType(TerrainTypes.TERRAIN_PLAINS, false, false);
+						if Map.Rand(100, "Tongue Cliff") < cliffPct then
+							plot:SetPlotType(PlotTypes.PLOT_MOUNTAIN, false, false);
+						else
+							plot:SetPlotType(PlotTypes.PLOT_HILLS, false, false);
+						end
+					else
+						plot:SetFeatureType(FeatureTypes.NO_FEATURE, -1);
+						if plot:GetPlotType() == PlotTypes.PLOT_MOUNTAIN then
+							plot:SetPlotType(PlotTypes.PLOT_LAND, false, false);
+						end
+						local t = plot:GetTerrainType();
+						if t == TerrainTypes.TERRAIN_DESERT or t == TerrainTypes.TERRAIN_SNOW or t == TerrainTypes.TERRAIN_TUNDRA then
+							plot:SetTerrainType(TerrainTypes.TERRAIN_PLAINS, false, false);
+						end
+					end
+				end
+			end
+			x = x + 1;
+		end
+		y = y + 1;
+	end
+	y = 0;
+	while y < iH do
+		local x = 0;
+		while x < iW do
+			if skip[x] ~= true and MirrorOwnsPlot(x, y, mirrored, iW) then
+				local plot = Map.GetPlot(x, y);
+				if plot ~= nil and plot:GetPlotType() == PlotTypes.PLOT_MOUNTAIN and TongueSignedDist(x, y) == mtnD then
+					if Map.Rand(100, "Tongue Cliff Spur") < 22 then
+						local dirs = FrostyHexNeighbors(x, y);
+						local di = 1;
+						while di <= 6 do
+							local nx = x + dirs[di][1];
+							local ny = y + dirs[di][2];
+							local nd = TongueSignedDist(nx, ny);
+							if nd == hillD or nd == 0 then
+								local np = Map.GetPlot(nx, ny);
+								if np ~= nil and np:IsWater() == false then
+									np:SetPlotType(PlotTypes.PLOT_MOUNTAIN, false, false);
+									np:SetFeatureType(FeatureTypes.NO_FEATURE, -1);
+								end
+								break
+							end
+							di = di + 1;
+						end
+					end
+				end
+			end
+			x = x + 1;
+		end
+		y = y + 1;
+	end
+	TongueCopyWestToEast();
+	WeeveeDbg("AddTongueLayout done");
+end
+------------------------------------------------------------------------------
+function AddTongueFeatures()
+	local cfg = GetBarrierConfig();
+	if cfg == nil or cfg.kind ~= "tongue" then
+		return
+	end
+	WeeveeDbg("AddTongueFeatures");
+	local iW, iH = Map.GetGridSize();
+	local skip = FillMireSkip(iW);
+	local mirrored = (DEF_MIRRORED == 1);
+	local mtnD = TongueMtnDist();
+	local jDepth = TongueGetJungleDepth();
+	local forestDepth = 4;
+	local band = {};
+	local y = 0;
+	while y < iH do
+		local x = 0;
+		while x < iW do
+			local i = y * iW + x + 1;
+			band[i] = 0;
+			if skip[x] ~= true and MirrorOwnsPlot(x, y, mirrored, iW) then
+				local plot = Map.GetPlot(x, y);
+				if plot ~= nil and plot:IsWater() == false and plot:GetTerrainType() ~= TerrainTypes.TERRAIN_TUNDRA then
+					local d = TongueSignedDist(x, y);
+					if d > mtnD then
+						band[i] = TongueEconKind(d - mtnD, x, y, jDepth, forestDepth);
+					end
+				end
+			end
+			x = x + 1;
+		end
+		y = y + 1;
+	end
+	EconBandBleed(band, iW, iH, skip, mirrored);
+	PaintEconBands(band, iW, iH, skip, mirrored);
+	TongueCopyWestToEast();
+	WeeveeDbg("AddTongueFeatures done");
+end
+------------------------------------------------------------------------------
+function SnakyWobble(x, y)
+	if snakyAmp == nil then
+		snakyAmp = 1 + Map.Rand(2, "Snaky Amp");
+	end
+	if snakyFrac == nil then
+		local iW, iH = Map.GetGridSize();
+		snakyFrac = Fractal.Create(iW, iH, 4, Map.GetFractalFlags(), -1, -1);
+	end
+	return (snakyFrac:GetHeight(x, y) - 128) / 128 * snakyAmp;
+end
+------------------------------------------------------------------------------
+function SnakyTundraWanted(x, y)
+	local d = TongueSignedDist(x, y);
+	local nogo = TongueNoGoWidth();
+	if nogo < 3 then
+		nogo = 4;
+	end
+	local wob = SnakyWobble(x, y);
+	local w = nogo + wob * 0.55;
+	if w < 2 then
+		w = 2;
+	end
+	if w > 5 then
+		w = 5;
+	end
+	local shift = wob * 0.85;
+	local back = w * 0.5;
+	local home = w - back;
+	local dd = d - shift;
+	if dd >= -back and dd <= home then
+		return true
+	end
+	return false
+end
+------------------------------------------------------------------------------
+function SnakyNearTundra(x, y, maxd)
+	local iW, iH = Map.GetGridSize();
+	local seen = {};
+	local qx = {x};
+	local qy = {y};
+	local qd = {0};
+	local qi = 1;
+	seen[y * iW + x] = true;
+	while qi <= #qx do
+		local cx = qx[qi];
+		local cy = qy[qi];
+		local cd = qd[qi];
+		local plot = Map.GetPlot(cx, cy);
+		if plot ~= nil and plot:GetTerrainType() == TerrainTypes.TERRAIN_TUNDRA then
+			return true
+		end
+		if cd < maxd then
+			local dirs = FrostyHexNeighbors(cx, cy);
+			local di = 1;
+			while di <= 6 do
+				local nx = cx + dirs[di][1];
+				local ny = cy + dirs[di][2];
+				if ny >= 0 and ny < iH and nx >= 0 and nx < iW then
+					local k = ny * iW + nx;
+					if seen[k] ~= true then
+						seen[k] = true;
+						table.insert(qx, nx);
+						table.insert(qy, ny);
+						table.insert(qd, cd + 1);
+					end
+				end
+				di = di + 1;
+			end
+		end
+		qi = qi + 1;
+	end
+	return false
+end
+------------------------------------------------------------------------------
+function SnakySealSeparator()
+	local iW, iH = Map.GetGridSize();
+	local skip = FillMireSkip(iW);
+	local mirrored = (DEF_MIRRORED == 1);
+	local y = 0;
+	while y < iH do
+		local x = 0;
+		while x < iW do
+			if skip[x] ~= true and MirrorOwnsPlot(x, y, mirrored, iW) then
+				local plot = Map.GetPlot(x, y);
+				if plot ~= nil and plot:IsWater() == false then
+					if SnakyTundraWanted(x, y) then
+						plot:SetTerrainType(TerrainTypes.TERRAIN_TUNDRA, false, false);
+						plot:SetFeatureType(FeatureTypes.NO_FEATURE, -1);
+						if plot:GetPlotType() == PlotTypes.PLOT_MOUNTAIN then
+							plot:SetPlotType(PlotTypes.PLOT_LAND, false, false);
+						end
+					end
+				end
+			end
+			x = x + 1;
+		end
+		y = y + 1;
+	end
+end
+------------------------------------------------------------------------------
+function StripSnakySeparatorFeatures()
+	if IsSnaky() == false then
+		return
+	end
+	local iW, iH = Map.GetGridSize();
+	local y = 0;
+	while y < iH do
+		local x = 0;
+		while x < iW do
+			local plot = Map.GetPlot(x, y);
+			if plot ~= nil and plot:GetTerrainType() == TerrainTypes.TERRAIN_TUNDRA then
+				local f = plot:GetFeatureType();
+				if f == FeatureTypes.FEATURE_FOREST or f == FeatureTypes.FEATURE_JUNGLE then
+					plot:SetFeatureType(FeatureTypes.NO_FEATURE, -1);
+				end
+			end
+			x = x + 1;
+		end
+		y = y + 1;
+	end
+end
+------------------------------------------------------------------------------
+function AddSnakyLayout()
+	local cfg = GetBarrierConfig();
+	if cfg == nil or cfg.kind ~= "snaky" then
+		return
+	end
+	WeeveeDbg("AddSnakyLayout");
+	local iW, iH = Map.GetGridSize();
+	local skip = FillMireSkip(iW);
+	local mirrored = (DEF_MIRRORED == 1);
+	local jDepth = TongueGetJungleDepth();
+	local forestDepth = 4;
+	SnakyWobble(0, 0);
+	print("Snaky nogo", TongueNoGoWidth(), "amp", snakyAmp, "jungle", jDepth);
+	local y = 0;
+	while y < iH do
+		local x = 0;
+		while x < iW do
+			if skip[x] ~= true and MirrorOwnsPlot(x, y, mirrored, iW) then
+				local plot = Map.GetPlot(x, y);
+				if plot ~= nil and plot:IsWater() == false then
+					if SnakyTundraWanted(x, y) then
+						plot:SetFeatureType(FeatureTypes.NO_FEATURE, -1);
+						plot:SetTerrainType(TerrainTypes.TERRAIN_TUNDRA, false, false);
+						plot:SetPlotType(PlotTypes.PLOT_LAND, false, false);
+					else
+						plot:SetFeatureType(FeatureTypes.NO_FEATURE, -1);
+						plot:SetTerrainType(TerrainTypes.TERRAIN_PLAINS, false, false);
+						if plot:GetPlotType() == PlotTypes.PLOT_MOUNTAIN then
+							plot:SetPlotType(PlotTypes.PLOT_LAND, false, false);
+						end
+					end
+				end
+			end
+			x = x + 1;
+		end
+		y = y + 1;
+	end
+	local nBlob = 2 + Map.Rand(2, "Snaky Blob Count");
+	local b = 1;
+	while b <= nBlob do
+		local tries = 0;
+		while tries < 40 do
+			tries = tries + 1;
+			local sx = Map.Rand(math.floor(iW / 2), "Snaky Blob X");
+			local sy = Map.Rand(iH, "Snaky Blob Y");
+			if skip[sx] ~= true then
+				local seed = Map.GetPlot(sx, sy);
+				if seed ~= nil and seed:IsWater() == false and seed:GetTerrainType() == TerrainTypes.TERRAIN_TUNDRA then
+					local target = 4 + Map.Rand(6, "Snaky Blob Size");
+					local body = {{sx, sy}};
+					local guard = 0;
+					while #body < target and guard < 50 do
+						guard = guard + 1;
+						local p = body[Map.Rand(#body, "Snaky Blob Pick") + 1];
+						local dirs = FrostyHexNeighbors(p[1], p[2]);
+						local di = 1 + Map.Rand(6, "Snaky Blob Dir");
+						if di > 6 then
+							di = 6;
+						end
+						local nx = p[1] + dirs[di][1];
+						local ny = p[2] + dirs[di][2];
+						local np = Map.GetPlot(nx, ny);
+						if np ~= nil and skip[nx] ~= true and np:IsWater() == false then
+							if MirrorOwnsPlot(nx, ny, mirrored, iW) then
+								if np:GetTerrainType() ~= TerrainTypes.TERRAIN_TUNDRA then
+									if SnakyTundraWanted(nx, ny) then
+										np:SetFeatureType(FeatureTypes.NO_FEATURE, -1);
+										np:SetTerrainType(TerrainTypes.TERRAIN_TUNDRA, false, false);
+										np:SetPlotType(PlotTypes.PLOT_LAND, false, false);
+										table.insert(body, {nx, ny});
+									end
+								else
+									table.insert(body, {nx, ny});
+								end
+							end
+						end
+					end
+					break
+				end
+			end
+		end
+		b = b + 1;
+	end
+	local nBite = 2 + Map.Rand(2, "Snaky Bite Count");
+	b = 1;
+	while b <= nBite do
+		local tries = 0;
+		while tries < 40 do
+			tries = tries + 1;
+			local sx = Map.Rand(math.floor(iW / 2), "Snaky Bite X");
+			local sy = Map.Rand(iH, "Snaky Bite Y");
+			if skip[sx] ~= true then
+				local seed = Map.GetPlot(sx, sy);
+				if seed ~= nil and seed:IsWater() == false and seed:GetTerrainType() == TerrainTypes.TERRAIN_TUNDRA then
+					if TongueSignedDist(sx, sy) > 0 then
+						local target = 4 + Map.Rand(8, "Snaky Bite Size");
+						local n = 0;
+						local steps = 0;
+						local cx, cy = sx, sy;
+						while n < target and steps < 24 do
+							steps = steps + 1;
+							local plot = Map.GetPlot(cx, cy);
+							if plot == nil or plot:IsWater() or skip[cx] == true then
+								break
+							end
+							if TongueSignedDist(cx, cy) <= 0 then
+								break
+							end
+							if plot:GetTerrainType() == TerrainTypes.TERRAIN_TUNDRA then
+								if SnakyTundraWanted(cx, cy) == false then
+									plot:SetTerrainType(TerrainTypes.TERRAIN_PLAINS, false, false);
+									n = n + 1;
+								end
+							end
+							local dirs = FrostyHexNeighbors(cx, cy);
+							local di = 1 + Map.Rand(6, "Snaky Bite Dir");
+							if di > 6 then
+								di = 6;
+							end
+							cx = cx + dirs[di][1];
+							cy = cy + dirs[di][2];
+						end
+						break
+					end
+				end
+			end
+		end
+		b = b + 1;
+	end
+	SnakySealSeparator();
+	y = 0;
+	while y < iH do
+		local x = 0;
+		while x < iW do
+			if skip[x] ~= true and MirrorOwnsPlot(x, y, mirrored, iW) then
+				local plot = Map.GetPlot(x, y);
+				if plot ~= nil and plot:IsWater() == false and plot:GetTerrainType() == TerrainTypes.TERRAIN_TUNDRA then
+					if plot:GetPlotType() ~= PlotTypes.PLOT_MOUNTAIN then
+						local edge = false;
+						local dirs = FrostyHexNeighbors(x, y);
+						local di = 1;
+						while di <= 6 do
+							local np = Map.GetPlot(x + dirs[di][1], y + dirs[di][2]);
+							if np ~= nil and np:IsWater() == false and np:GetTerrainType() ~= TerrainTypes.TERRAIN_TUNDRA then
+								edge = true;
+							end
+							di = di + 1;
+						end
+						if edge then
+							if Map.Rand(100, "Snaky Edge Hill") < 34 then
+								plot:SetPlotType(PlotTypes.PLOT_HILLS, false, false);
+							end
+						elseif Map.Rand(100, "Snaky Interior Hill") < 8 then
+							plot:SetPlotType(PlotTypes.PLOT_HILLS, false, false);
+						end
+					end
+				end
+			end
+			x = x + 1;
+		end
+		y = y + 1;
+	end
+	TongueCopyWestToEast();
+	WeeveeDbg("AddSnakyLayout done");
+end
+------------------------------------------------------------------------------
+function SnakyContactPlotOk(plot, skip, mirrored, iW)
+	if plot == nil or plot:IsWater() then
+		return false
+	end
+	local x = plot:GetX();
+	if skip[x] == true then
+		return false
+	end
+	if plot:GetTerrainType() == TerrainTypes.TERRAIN_TUNDRA then
+		return false
+	end
+	if TongueSignedDist(x, plot:GetY()) <= 0 then
+		return false
+	end
+	return true
+end
+------------------------------------------------------------------------------
+function SnakyHexNearMountain(x, y, maxd)
+	local yy = y - maxd;
+	while yy <= y + maxd do
+		local xx = x - maxd;
+		while xx <= x + maxd do
+			if Map.PlotDistance(x, y, xx, yy) <= maxd then
+				local p = Map.GetPlot(xx, yy);
+				if p ~= nil and p:GetPlotType() == PlotTypes.PLOT_MOUNTAIN then
+					return true
+				end
+			end
+			xx = xx + 1;
+		end
+		yy = yy + 1;
+	end
+	return false
+end
+------------------------------------------------------------------------------
+function SnakyPlaceContactMountains(iW, iH, skip, mirrored, dist)
+	local mtnOps = Map.GetCustomOption(OPT_FRONT_MOUNTAIN);
+	local seedPct = 20 + 3 * mtnOps;
+	if seedPct > 42 then
+		seedPct = 42;
+	end
+	local y = 0;
+	while y < iH do
+		local x = 0;
+		while x < iW do
+			local plot = Map.GetPlot(x, y);
+			if SnakyContactPlotOk(plot, skip, mirrored, iW) and plot:GetPlotType() ~= PlotTypes.PLOT_MOUNTAIN then
+				local d = dist[y * iW + x];
+				if d == 1 then
+					if Map.Rand(100, "Snaky Contact Mtn") < seedPct then
+						plot:SetPlotType(PlotTypes.PLOT_MOUNTAIN, false, false);
+						plot:SetFeatureType(FeatureTypes.NO_FEATURE, -1);
+					elseif Map.Rand(100, "Snaky Contact Hill") < 28 then
+						plot:SetPlotType(PlotTypes.PLOT_HILLS, false, false);
+					end
+				end
+			end
+			x = x + 1;
+		end
+		y = y + 1;
+	end
+	y = 0;
+	while y < iH do
+		local x = 0;
+		while x < iW do
+			local plot = Map.GetPlot(x, y);
+			if plot ~= nil and plot:GetPlotType() == PlotTypes.PLOT_MOUNTAIN then
+				if SnakyContactPlotOk(plot, skip, mirrored, iW) then
+					local d0 = dist[y * iW + x];
+					if d0 ~= nil and d0 <= 1 then
+						local dirs = FrostyHexNeighbors(x, y);
+						local di = 1;
+						while di <= 6 do
+							local nx = x + dirs[di][1];
+							local ny = y + dirs[di][2];
+							local np = Map.GetPlot(nx, ny);
+							if SnakyContactPlotOk(np, skip, mirrored, iW) and np:GetPlotType() ~= PlotTypes.PLOT_MOUNTAIN then
+								local nd = dist[ny * iW + nx];
+								local grow = false;
+								if nd == 2 and Map.Rand(100, "Snaky Contact Grow") < 36 then
+									grow = true;
+								elseif nd == 3 and Map.Rand(100, "Snaky Contact Spur") < 16 then
+									grow = true;
+								end
+								if grow then
+									np:SetPlotType(PlotTypes.PLOT_MOUNTAIN, false, false);
+									np:SetFeatureType(FeatureTypes.NO_FEATURE, -1);
+								end
+							end
+							di = di + 1;
+						end
+					end
+				end
+			end
+			x = x + 1;
+		end
+		y = y + 1;
+	end
+	y = 0;
+	while y < iH do
+		local x = 0;
+		while x < iW do
+			local plot = Map.GetPlot(x, y);
+			if SnakyContactPlotOk(plot, skip, mirrored, iW) and plot:GetPlotType() ~= PlotTypes.PLOT_MOUNTAIN then
+				local d = dist[y * iW + x];
+				if d == 1 then
+					if SnakyHexNearMountain(x, y, 5) == false then
+						plot:SetPlotType(PlotTypes.PLOT_MOUNTAIN, false, false);
+						plot:SetFeatureType(FeatureTypes.NO_FEATURE, -1);
+					end
+				end
+			end
+			x = x + 1;
+		end
+		y = y + 1;
+	end
+end
+------------------------------------------------------------------------------
+function SnakyGrassNearWater(iW, iH, skip, mirrored)
+	local y = 0;
+	while y < iH do
+		local x = 0;
+		while x < iW do
+			if skip[x] ~= true and MirrorOwnsPlot(x, y, mirrored, iW) then
+				local plot = Map.GetPlot(x, y);
+				if plot ~= nil and plot:IsWater() == false and plot:GetPlotType() ~= PlotTypes.PLOT_MOUNTAIN then
+					if plot:GetTerrainType() == TerrainTypes.TERRAIN_PLAINS then
+						if plot:GetFeatureType() ~= FeatureTypes.FEATURE_JUNGLE then
+							local nearWater = false;
+							local near2 = false;
+							local dirs = FrostyHexNeighbors(x, y);
+							local di = 1;
+							while di <= 6 do
+								local np = Map.GetPlot(x + dirs[di][1], y + dirs[di][2]);
+								if np ~= nil and np:IsWater() then
+									nearWater = true;
+								end
+								di = di + 1;
+							end
+							if nearWater == false then
+								local yy = y - 2;
+								while yy <= y + 2 do
+									local xx = x - 2;
+									while xx <= x + 2 do
+										if Map.PlotDistance(x, y, xx, yy) == 2 then
+											local p2 = Map.GetPlot(xx, yy);
+											if p2 ~= nil and p2:IsWater() then
+												near2 = true;
+											end
+										end
+										xx = xx + 1;
+									end
+									yy = yy + 1;
+								end
+							end
+							if nearWater and Map.Rand(100, "Snaky Coast Grass") < 72 then
+								plot:SetTerrainType(TerrainTypes.TERRAIN_GRASS, false, false);
+							elseif near2 and Map.Rand(100, "Snaky Near Grass") < 38 then
+								plot:SetTerrainType(TerrainTypes.TERRAIN_GRASS, false, false);
+							end
+						end
+					end
+				end
+			end
+			x = x + 1;
+		end
+		y = y + 1;
+	end
+end
+------------------------------------------------------------------------------
+function SnakyCleanupIsolatedJungle(iW, iH, skip, mirrored)
+	local y = 0;
+	while y < iH do
+		local x = 0;
+		while x < iW do
+			if skip[x] ~= true and MirrorOwnsPlot(x, y, mirrored, iW) then
+				local plot = Map.GetPlot(x, y);
+				if plot ~= nil and plot:GetFeatureType() == FeatureTypes.FEATURE_JUNGLE then
+					local isolated = true;
+					local nSeen = 0;
+					local dirs = FrostyHexNeighbors(x, y);
+					local di = 1;
+					while di <= 6 do
+						local np = Map.GetPlot(x + dirs[di][1], y + dirs[di][2]);
+						if np ~= nil then
+							nSeen = nSeen + 1;
+							local t = np:GetTerrainType();
+							local pt = np:GetPlotType();
+							local isTundra = (t == TerrainTypes.TERRAIN_TUNDRA);
+							local isMtn = (pt == PlotTypes.PLOT_MOUNTAIN);
+							if isTundra == false and isMtn == false then
+								isolated = false;
+							end
+						end
+						di = di + 1;
+					end
+					if isolated and nSeen > 0 then
+						plot:SetFeatureType(FeatureTypes.NO_FEATURE, -1);
+						if plot:GetTerrainType() ~= TerrainTypes.TERRAIN_TUNDRA then
+							plot:SetTerrainType(TerrainTypes.TERRAIN_PLAINS, false, false);
+						end
+					end
+				end
+			end
+			x = x + 1;
+		end
+		y = y + 1;
+	end
+end
+------------------------------------------------------------------------------
+function AddSnakyFeatures()
+	local cfg = GetBarrierConfig();
+	if cfg == nil or cfg.kind ~= "snaky" then
+		return
+	end
+	WeeveeDbg("AddSnakyFeatures");
+	local iW, iH = Map.GetGridSize();
+	local skip = FillMireSkip(iW);
+	local mirrored = (DEF_MIRRORED == 1);
+	local jDepth = TongueGetJungleDepth();
+	local dist = SnakyTundraDistField(iW, iH);
+	local y = 0;
+	while y < iH do
+		local x = 0;
+		while x < iW do
+			if skip[x] ~= true and MirrorOwnsPlot(x, y, mirrored, iW) then
+				local plot = Map.GetPlot(x, y);
+				if plot ~= nil and plot:IsWater() == false and plot:GetTerrainType() ~= TerrainTypes.TERRAIN_TUNDRA then
+					if plot:GetPlotType() ~= PlotTypes.PLOT_MOUNTAIN then
+						plot:SetFeatureType(FeatureTypes.NO_FEATURE, -1);
+						plot:SetTerrainType(TerrainTypes.TERRAIN_PLAINS, false, false);
+						local d = dist[y * iW + x];
+						if d ~= nil and d > 0 and d < 900 then
+							local n = TongueEconNoise(x, y, 1);
+							local cut = jDepth + n * 1.25;
+							if cut < 2 then
+								cut = 2;
+							end
+							local jungle = false;
+							if d <= 1 then
+								jungle = true;
+							elseif d <= cut then
+								if Map.Rand(100, "Snaky Jungle Core") < 80 then
+									jungle = true;
+								end
+							elseif d <= cut + 3 then
+								local p = 50 - (d - cut) * 14;
+								if p < 10 then
+									p = 10;
+								end
+								if Map.Rand(100, "Snaky Jungle Fizzle") < p then
+									jungle = true;
+								end
+							end
+							if jungle then
+								plot:SetTerrainType(TerrainTypes.TERRAIN_PLAINS, false, false);
+								plot:SetFeatureType(FeatureTypes.FEATURE_JUNGLE, -1);
+							end
+						end
+					end
+				end
+			end
+			x = x + 1;
+		end
+		y = y + 1;
+	end
+	y = 0;
+	while y < iH do
+		local x = 0;
+		while x < iW do
+			if skip[x] ~= true and MirrorOwnsPlot(x, y, mirrored, iW) then
+				local plot = Map.GetPlot(x, y);
+				if plot ~= nil and plot:GetPlotType() ~= PlotTypes.PLOT_MOUNTAIN and plot:GetFeatureType() == FeatureTypes.NO_FEATURE then
+					if plot:GetTerrainType() ~= TerrainTypes.TERRAIN_TUNDRA and plot:IsWater() == false then
+						local d = dist[y * iW + x];
+						if d ~= nil and d <= jDepth + 3 then
+							local nJ = 0;
+							local dirs = FrostyHexNeighbors(x, y);
+							local di = 1;
+							while di <= 6 do
+								local np = Map.GetPlot(x + dirs[di][1], y + dirs[di][2]);
+								if np ~= nil and np:GetFeatureType() == FeatureTypes.FEATURE_JUNGLE then
+									nJ = nJ + 1;
+								end
+								di = di + 1;
+							end
+							if nJ >= 4 then
+								plot:SetTerrainType(TerrainTypes.TERRAIN_PLAINS, false, false);
+								plot:SetFeatureType(FeatureTypes.FEATURE_JUNGLE, -1);
+							end
+						end
+					end
+				end
+			end
+			x = x + 1;
+		end
+		y = y + 1;
+	end
+	y = 0;
+	while y < iH do
+		local x = 0;
+		while x < iW do
+			if skip[x] ~= true and MirrorOwnsPlot(x, y, mirrored, iW) then
+				local plot = Map.GetPlot(x, y);
+				if plot ~= nil and plot:IsWater() == false and plot:GetPlotType() ~= PlotTypes.PLOT_MOUNTAIN then
+					if plot:GetTerrainType() ~= TerrainTypes.TERRAIN_TUNDRA and plot:GetFeatureType() ~= FeatureTypes.FEATURE_JUNGLE then
+						local d = dist[y * iW + x];
+						if d ~= nil and d >= 2 and d < 900 then
+							local n = TongueEconNoise(x, y, 1);
+							local cut = jDepth + n * 1.25;
+							if cut < 2 then
+								cut = 2;
+							end
+							local nearJ = HexNearFeature(x, y, FeatureTypes.FEATURE_JUNGLE, 1);
+							if nearJ and d <= cut + 6 and Map.Rand(100, "Snaky Jungle Finger") < 30 + n * 14 then
+								plot:SetTerrainType(TerrainTypes.TERRAIN_PLAINS, false, false);
+								plot:SetFeatureType(FeatureTypes.FEATURE_JUNGLE, -1);
+							elseif nearJ == false and d >= cut + 1 and d <= cut + 8 then
+								if n > 0.18 and Map.Rand(100, "Snaky Jungle Splinter") < 7 then
+									plot:SetTerrainType(TerrainTypes.TERRAIN_PLAINS, false, false);
+									plot:SetFeatureType(FeatureTypes.FEATURE_JUNGLE, -1);
+								end
+							end
+						end
+					end
+				end
+			end
+			x = x + 1;
+		end
+		y = y + 1;
+	end
+	local nClump = 3 + Map.Rand(3, "Snaky Jungle Clump Count");
+	local c = 1;
+	while c <= nClump do
+		local tries = 0;
+		while tries < 25 do
+			tries = tries + 1;
+			local sx = Map.Rand(math.floor(iW / 2), "Snaky Jungle Clump X");
+			local sy = Map.Rand(iH, "Snaky Jungle Clump Y");
+			if skip[sx] ~= true and MirrorOwnsPlot(sx, sy, mirrored, iW) then
+				local seed = Map.GetPlot(sx, sy);
+				local d = dist[sy * iW + sx];
+				if seed ~= nil and seed:IsWater() == false and seed:GetPlotType() ~= PlotTypes.PLOT_MOUNTAIN then
+					if seed:GetTerrainType() ~= TerrainTypes.TERRAIN_TUNDRA and HexNearFeature(sx, sy, FeatureTypes.FEATURE_JUNGLE, 2) == false then
+						if d ~= nil and d >= 3 and d <= jDepth + 8 then
+							local target = 1 + Map.Rand(3, "Snaky Jungle Clump Size");
+							local n = 0;
+							local cx, cy = sx, sy;
+							while n < target do
+								local plot = Map.GetPlot(cx, cy);
+								if plot == nil or plot:IsWater() or skip[cx] == true then
+									break
+								end
+								if plot:GetPlotType() == PlotTypes.PLOT_MOUNTAIN then
+									break
+								end
+								if plot:GetTerrainType() == TerrainTypes.TERRAIN_TUNDRA then
+									break
+								end
+								plot:SetTerrainType(TerrainTypes.TERRAIN_PLAINS, false, false);
+								plot:SetFeatureType(FeatureTypes.FEATURE_JUNGLE, -1);
+								n = n + 1;
+								local dirs = FrostyHexNeighbors(cx, cy);
+								local di = 1 + Map.Rand(6, "Snaky Jungle Clump Dir");
+								if di > 6 then
+									di = 6;
+								end
+								cx = cx + dirs[di][1];
+								cy = cy + dirs[di][2];
+							end
+							break
+						end
+					end
+				end
+			end
+		end
+		c = c + 1;
+	end
+	SnakyPlaceContactMountains(iW, iH, skip, mirrored, dist);
+	SnakyCleanupIsolatedJungle(iW, iH, skip, mirrored);
+	TongueEnsureEconFrac();
+	local forestCut = tongueEconFrac2:GetHeight(48);
+	y = 0;
+	while y < iH do
+		local x = 0;
+		while x < iW do
+			if skip[x] ~= true and MirrorOwnsPlot(x, y, mirrored, iW) then
+				local plot = Map.GetPlot(x, y);
+				if plot ~= nil and plot:IsWater() == false and plot:GetPlotType() ~= PlotTypes.PLOT_MOUNTAIN then
+					if plot:GetTerrainType() ~= TerrainTypes.TERRAIN_TUNDRA and plot:GetFeatureType() ~= FeatureTypes.FEATURE_JUNGLE then
+						if SnakyForestWanted(x, y, iW, iH) and HexNearFeature(x, y, FeatureTypes.FEATURE_JUNGLE, 1) == false then
+							local xN = 0;
+							if iW > 2 then
+								xN = x / (iW * 0.5);
+							end
+							local yN = 0;
+							if iH > 1 then
+								yN = y / (iH - 1);
+							end
+							local sw = (xN <= 0.22 and yN <= 0.48);
+							local h = tongueEconFrac2:GetHeight(x, y);
+							local clump = 62;
+							if sw then
+								clump = 80;
+							end
+							if h >= forestCut then
+								plot:SetTerrainType(TerrainTypes.TERRAIN_GRASS, false, false);
+								if Map.Rand(100, "Snaky Forest Clump") < clump then
+									plot:SetFeatureType(FeatureTypes.FEATURE_FOREST, -1);
+								end
+							elseif Map.Rand(100, "Snaky Forest Finger") < 16 then
+								plot:SetTerrainType(TerrainTypes.TERRAIN_GRASS, false, false);
+								if Map.Rand(100, "Snaky Forest Speck") < 36 then
+									plot:SetFeatureType(FeatureTypes.FEATURE_FOREST, -1);
+								end
+							end
+							if plot:GetTerrainType() == TerrainTypes.TERRAIN_GRASS then
+								if Map.Rand(100, "Snaky Forest Hill") < 28 then
+									plot:SetPlotType(PlotTypes.PLOT_HILLS, false, false);
+								end
+							end
+						end
+					end
+				end
+			end
+			x = x + 1;
+		end
+		y = y + 1;
+	end
+	y = 0;
+	while y < iH do
+		local x = 0;
+		while x < iW do
+			if skip[x] ~= true and MirrorOwnsPlot(x, y, mirrored, iW) then
+				local plot = Map.GetPlot(x, y);
+				if plot ~= nil and plot:GetPlotType() ~= PlotTypes.PLOT_MOUNTAIN and plot:GetFeatureType() == FeatureTypes.NO_FEATURE then
+					if plot:GetTerrainType() == TerrainTypes.TERRAIN_GRASS and HexNearFeature(x, y, FeatureTypes.FEATURE_JUNGLE, 1) == false then
+						local nF = 0;
+						local dirs = FrostyHexNeighbors(x, y);
+						local di = 1;
+						while di <= 6 do
+							local np = Map.GetPlot(x + dirs[di][1], y + dirs[di][2]);
+							if np ~= nil and np:GetFeatureType() == FeatureTypes.FEATURE_FOREST then
+								nF = nF + 1;
+							end
+							di = di + 1;
+						end
+						if nF >= 3 then
+							local fillP = 48;
+							local xN = 0;
+							if iW > 2 then
+								xN = x / (iW * 0.5);
+							end
+							local yN = 0;
+							if iH > 1 then
+								yN = y / (iH - 1);
+							end
+							if xN <= 0.22 and yN <= 0.48 then
+								fillP = 64;
+							end
+							if Map.Rand(100, "Snaky Forest Fill") < fillP then
+								plot:SetFeatureType(FeatureTypes.FEATURE_FOREST, -1);
+							end
+						end
+					end
+				end
+			end
+			x = x + 1;
+		end
+		y = y + 1;
+	end
+	SnakyPlaceForestPeaks(iW, iH, skip, mirrored);
+	SnakyGrassNearWater(iW, iH, skip, mirrored);
+	TongueCopyWestToEast();
+	StripSnakySeparatorFeatures();
+	WeeveeDbg("AddSnakyFeatures done");
+end
+------------------------------------------------------------------------------
 function FrostyClimateId(plot)
 	if plot == nil or plot:IsWater() then
 		return 0
@@ -6157,7 +8110,7 @@ function AddFrostyForests()
 	while y < iH do
 		local x = 0;
 		while x < iW do
-			if skip[x] ~= true and ((not mirrored) or (x <= iW * 0.5)) then
+			if skip[x] ~= true and MirrorOwnsPlot(x, y, mirrored, iW) then
 				local plot = Map.GetPlot(x, y);
 				if plot ~= nil
 					and plot:IsWater() == false
@@ -6193,7 +8146,7 @@ function AddFrostyIce()
 		local distN = iH - 1 - y;
 		local x = 0;
 		while x < iW do
-			if skip[x] ~= true and ((not mirrored) or (x <= iW * 0.5)) then
+			if skip[x] ~= true and MirrorOwnsPlot(x, y, mirrored, iW) then
 				local plot = Map.GetPlot(x, y);
 				if plot ~= nil and plot:IsWater() and plot:GetFeatureType() == FeatureTypes.NO_FEATURE then
 					if distN > 4 then
@@ -6451,7 +8404,7 @@ function MireBleedFenWood(iW, iH, skip, mirrored)
 		while y < iH do
 			local x = 0;
 			while x < iW do
-				if skip[x] ~= true and ((not mirrored) or (x <= iW * 0.5)) then
+				if skip[x] ~= true and MirrorOwnsPlot(x, y, mirrored, iW) then
 					local i = y * iW + x + 1;
 					local band = mireBand[i];
 					if band == 2 or band == 3 then
@@ -6524,7 +8477,7 @@ function AddMireBands()
 		while x < iW do
 			local i = y * iW + x + 1;
 			mireBand[i] = 0;
-			if skip[x] ~= true and ((not mirrored) or (x <= iW * 0.5)) then
+			if skip[x] ~= true and MirrorOwnsPlot(x, y, mirrored, iW) then
 				local plot = Map.GetPlot(x, y);
 				if plot ~= nil and plot:IsWater() == false then
 					local yNorm = 0;
@@ -6671,7 +8624,7 @@ function AddMireBands()
 		end
 		local x = 0;
 		while x < iW do
-			if skip[x] ~= true and ((not mirrored) or (x <= iW * 0.5)) then
+			if skip[x] ~= true and MirrorOwnsPlot(x, y, mirrored, iW) then
 				local plot = Map.GetPlot(x, snowY);
 				if plot ~= nil and plot:IsWater() == false and snowFrac:GetHeight(x, snowY) >= cut then
 					plot:SetTerrainType(TerrainTypes.TERRAIN_SNOW, false, false);
@@ -6693,7 +8646,7 @@ function AddMireBands()
 		end
 		local x = 0;
 		while x < iW do
-			if skip[x] ~= true and ((not mirrored) or (x <= iW * 0.5)) then
+			if skip[x] ~= true and MirrorOwnsPlot(x, y, mirrored, iW) then
 				local plot = Map.GetPlot(x, snowY);
 				if plot ~= nil and plot:IsWater() == false and plot:GetTerrainType() ~= TerrainTypes.TERRAIN_SNOW then
 					if CountAdjacentTerrain(plot, TerrainTypes.TERRAIN_SNOW) >= 1 and Map.Rand(100, "Mire Snow Grow") < growChance then
@@ -6715,7 +8668,7 @@ function AddMireBands()
 		local cut = hillCut[hillY];
 		local x = 0;
 		while x < iW do
-			if skip[x] ~= true and ((not mirrored) or (x <= iW * 0.5)) then
+			if skip[x] ~= true and MirrorOwnsPlot(x, y, mirrored, iW) then
 				local plot = Map.GetPlot(x, hillY);
 				if plot ~= nil and plot:IsWater() == false and plot:GetPlotType() == PlotTypes.PLOT_LAND and hillFrac:GetHeight(x, hillY) >= cut then
 					plot:SetPlotType(PlotTypes.PLOT_HILLS, false, false);
@@ -6733,7 +8686,7 @@ function AddMireBands()
 		end
 		local x = 0;
 		while x < iW do
-			if skip[x] ~= true and ((not mirrored) or (x <= iW * 0.5)) then
+			if skip[x] ~= true and MirrorOwnsPlot(x, y, mirrored, iW) then
 				local plot = Map.GetPlot(x, hillY);
 				if plot ~= nil and plot:IsWater() == false and plot:GetPlotType() == PlotTypes.PLOT_LAND then
 					local hn = 0;
@@ -7054,7 +9007,7 @@ function AddWastelandWaterLayout()
 	while y < iH do
 		local x = 0;
 		while x < iW do
-			if skip[x] ~= true and ((not mirrored) or (x <= iW * 0.5)) then
+			if skip[x] ~= true and MirrorOwnsPlot(x, y, mirrored, iW) then
 				local plot = Map.GetPlot(x, y);
 				if plot ~= nil and plot:IsWater() == false and plot:GetPlotType() ~= PlotTypes.PLOT_MOUNTAIN then
 					local i = y * iW + x + 1;
@@ -7088,7 +9041,7 @@ function AddWastelandWaterLayout()
 		while x < iW do
 			local i = y * iW + x + 1;
 			wastelandWaterDist[i] = dist[i];
-			if skip[x] ~= true and ((not mirrored) or (x <= iW * 0.5)) then
+			if skip[x] ~= true and MirrorOwnsPlot(x, y, mirrored, iW) then
 				local plot = Map.GetPlot(x, y);
 				if plot ~= nil and plot:IsWater() == false and plot:GetPlotType() ~= PlotTypes.PLOT_MOUNTAIN then
 					local d = dist[i];
@@ -7152,7 +9105,7 @@ function BufferWastelandDesertFromLush(iW, iH, skip, mirrored)
 	while y < iH do
 		local x = 0;
 		while x < iW do
-			if skip[x] ~= true and ((not mirrored) or (x <= iW * 0.5)) then
+			if skip[x] ~= true and MirrorOwnsPlot(x, y, mirrored, iW) then
 				local plot = Map.GetPlot(x, y);
 				if plot ~= nil and plot:GetTerrainType() == TerrainTypes.TERRAIN_DESERT then
 					local lush = false;
@@ -7407,7 +9360,7 @@ function FixWastelandFloodPlains()
 	while y < iH do
 		local x = 0;
 		while x < iW do
-			if skip[x] ~= true and ((not mirrored) or (x <= iW * 0.5)) then
+			if skip[x] ~= true and MirrorOwnsPlot(x, y, mirrored, iW) then
 				local plot = Map.GetPlot(x, y);
 				if plot ~= nil and plot:IsWater() == false then
 					local feat = plot:GetFeatureType();
@@ -7435,7 +9388,7 @@ function PeakMassifClear(px, py, minD, iW, iH, skip, mirrored)
 	while y < iH do
 		local x = 0;
 		while x < iW do
-			if skip[x] ~= true and ((not mirrored) or (x <= iW * 0.5)) then
+			if skip[x] ~= true and MirrorOwnsPlot(x, y, mirrored, iW) then
 				local plot = Map.GetPlot(x, y);
 				if plot ~= nil and plot:GetPlotType() == PlotTypes.PLOT_MOUNTAIN then
 					if Map.PlotDistance(px, py, x, y) < minD then
@@ -7800,7 +9753,7 @@ function PeakAssignUntaggedMassifs(iW, iH, skip, mirrored)
 	while y < iH do
 		local x = 0;
 		while x < iW do
-			if skip[x] ~= true and ((not mirrored) or (x <= iW * 0.5)) then
+			if skip[x] ~= true and MirrorOwnsPlot(x, y, mirrored, iW) then
 				local i = y * iW + x + 1;
 				if peakMassif[i] == nil then
 					local plot = Map.GetPlot(x, y);
@@ -7869,7 +9822,7 @@ function AddPeaksLayout()
 	while y < iH do
 		local x = 0;
 		while x < iW do
-			if skip[x] ~= true and ((not mirrored) or (x <= iW * 0.5)) then
+			if skip[x] ~= true and MirrorOwnsPlot(x, y, mirrored, iW) then
 				local plot = Map.GetPlot(x, y);
 				if plot ~= nil and plot:IsWater() == false then
 					local keepFront = (frontBand[x] == true and plot:GetPlotType() == PlotTypes.PLOT_MOUNTAIN);
@@ -7959,7 +9912,7 @@ function AddPeaksLayout()
 		while x < iW do
 			local i = y * iW + x + 1;
 			dist[i] = INF;
-			if skip[x] ~= true and ((not mirrored) or (x <= iW * 0.5)) then
+			if skip[x] ~= true and MirrorOwnsPlot(x, y, mirrored, iW) then
 				local plot = Map.GetPlot(x, y);
 				if plot ~= nil and plot:GetPlotType() == PlotTypes.PLOT_MOUNTAIN then
 					dist[i] = 0;
@@ -8017,7 +9970,7 @@ function AddPeaksLayout()
 			if mz[i] ~= nil then
 				peakMassif[i] = mz[i];
 			end
-			if skip[x] ~= true and ((not mirrored) or (x <= iW * 0.5)) then
+			if skip[x] ~= true and MirrorOwnsPlot(x, y, mirrored, iW) then
 				local plot = Map.GetPlot(x, y);
 				if plot ~= nil and plot:IsWater() == false then
 					if plot:GetPlotType() == PlotTypes.PLOT_MOUNTAIN then
@@ -8656,7 +10609,7 @@ function AddWastelandTundraForests()
 	while y < iH do
 		local x = 0;
 		while x < iW do
-			if skip[x] ~= true and ((not mirrored) or (x <= iW * 0.5)) then
+			if skip[x] ~= true and MirrorOwnsPlot(x, y, mirrored, iW) then
 				local plot = Map.GetPlot(x, y);
 				if plot ~= nil
 					and plot:IsWater() == false
@@ -9018,7 +10971,53 @@ function StripBarrierResources()
 		end
 		ci = ci + 1;
 	end
+	if IsTongue() then
+		local y = 0;
+		while y < iH do
+			local x = 0;
+			while x < iW do
+				if TongueIsBarrierPlot(x, y) then
+					local plot = Map.GetPlot(x, y);
+					if plot ~= nil then
+						local res = plot:GetResourceType(-1);
+						if res ~= -1 and res ~= oilID and res ~= alumID and res ~= uranID then
+							plot:SetResourceType(-1);
+							n = n + 1;
+						end
+					end
+				end
+				x = x + 1;
+			end
+			y = y + 1;
+		end
+	end
 	print("Barrier resources stripped:", n);
+end
+------------------------------------------------------------------------------
+function StripOasisBarrierForests()
+	local cfg = GetBarrierConfig();
+	if cfg == nil or cfg.kind ~= "desert" then
+		return
+	end
+	local iW, iH = Map.GetGridSize();
+	local skip = FillMireSkip(iW);
+	local n = 0;
+	local y = 0;
+	while y < iH do
+		local x = 0;
+		while x < iW do
+			if skip[x] == true then
+				local plot = Map.GetPlot(x, y);
+				if plot ~= nil and plot:GetFeatureType() == FeatureTypes.FEATURE_FOREST then
+					plot:SetFeatureType(FeatureTypes.NO_FEATURE, -1);
+					n = n + 1;
+				end
+			end
+			x = x + 1;
+		end
+		y = y + 1;
+	end
+	print("Oasis barrier forests stripped:", n);
 end
 ------------------------------------------------------------------------------
 function GetWestTundraFrontBands(iW)
@@ -9097,7 +11096,7 @@ end
 ------------------------------------------------------------------------------
 function PlaceDesertTundraFrontResources()
 	local cfg = GetBarrierConfig();
-	if cfg == nil or cfg.kind == "peaks" then
+	if cfg == nil or cfg.kind == "peaks" or IsTongue() then
 		return
 	end
 	local iW, iH = Map.GetGridSize();
@@ -9272,7 +11271,7 @@ function PlaceFrostySnowResources()
 	while y < iH do
 		local x = 0;
 		while x < iW do
-			if skip[x] ~= true and ((not mirrored) or (x <= iW * 0.5)) then
+			if skip[x] ~= true and MirrorOwnsPlot(x, y, mirrored, iW) then
 				local plot = Map.GetPlot(x, y);
 				if plot ~= nil and plot:IsWater() == false and plot:GetPlotType() ~= PlotTypes.PLOT_MOUNTAIN then
 					local t = plot:GetTerrainType();
@@ -9686,7 +11685,7 @@ function PlaceMurkWheatAndMarshStone()
 	while y < iH do
 		local x = 0;
 		while x < iW do
-			if skip[x] ~= true and ((not mirrored) or (x <= iW * 0.5)) then
+			if skip[x] ~= true and MirrorOwnsPlot(x, y, mirrored, iW) then
 				local plot = Map.GetPlot(x, y);
 				if plot ~= nil
 					and plot:IsWater() == false
@@ -9735,7 +11734,7 @@ function PlaceMurkSnowStoneIron()
 	while y < iH do
 		local x = 0;
 		while x < iW do
-			if skip[x] ~= true and ((not mirrored) or (x <= iW * 0.5)) then
+			if skip[x] ~= true and MirrorOwnsPlot(x, y, mirrored, iW) then
 				local plot = Map.GetPlot(x, y);
 				if plot ~= nil
 					and plot:IsWater() == false
@@ -9784,7 +11783,7 @@ function PlacePeaksPlainsCattle()
 	while y < iH do
 		local x = 0;
 		while x < iW do
-			if skip[x] ~= true and ((not mirrored) or (x <= iW * 0.5)) then
+			if skip[x] ~= true and MirrorOwnsPlot(x, y, mirrored, iW) then
 				local plot = Map.GetPlot(x, y);
 				if plot ~= nil and plot:IsWater() == false then
 					if horseID ~= nil and plot:GetResourceType(-1) == horseID then
@@ -9848,7 +11847,7 @@ function PlaceWastelandTundraWheatSheep()
 	while y < iH do
 		local x = 0;
 		while x < iW do
-			if skip[x] ~= true and ((not mirrored) or (x <= iW * 0.5)) then
+			if skip[x] ~= true and MirrorOwnsPlot(x, y, mirrored, iW) then
 				local plot = Map.GetPlot(x, y);
 				if plot ~= nil
 					and plot:IsWater() == false
@@ -9915,7 +11914,7 @@ function PlaceDesertMainlandResourceBoost()
 	while y < iH do
 		local x = 0;
 		while x < iW do
-			if skip[x] ~= true and ((not mirrored) or (x <= iW * 0.5)) then
+			if skip[x] ~= true and MirrorOwnsPlot(x, y, mirrored, iW) then
 				local plot = Map.GetPlot(x, y);
 				if plot ~= nil
 					and plot:IsWater() == false
@@ -10120,6 +12119,7 @@ function StartPlotSystem()
 
 	WeeveeDbg("PlaceNaturalWonders");
 	start_plot_database:PlaceNaturalWonders(wonderargs)
+	StripSeparatorNaturalWonders();
 	WeeveeDbg("PlaceResources");
 	AddWastelandWaterLayout();
 	FixWastelandFloodPlains();
@@ -10141,6 +12141,8 @@ function StartPlotSystem()
 	start_plot_database:AddForestToResource();
 	WastelandTundraStartHillForest(start_plot_database);
 	AddSnowForests();
+	StripOasisBarrierForests();
+	StripSnakySeparatorFeatures();
 	AddBarrierOases();
 	AddWastelandFallout();
 	AddWetlandBarrierFeatures();
@@ -10156,6 +12158,24 @@ function StartPlotSystem()
 					plot:SetNWOfRiver(false,FlowDirectionTypes.NO_FLOWDIRECTION)
 					plot:SetNEOfRiver(false,FlowDirectionTypes.NO_FLOWDIRECTION)
 				end
+			end
+		end
+		if IsTongue() then
+			local y = 0;
+			while y < iH do
+				local x = 0;
+				while x < iW do
+					if TongueIsBarrierPlot(x, y) then
+						local plot = Map.GetPlot(x, y);
+						if plot ~= nil then
+							plot:SetWOfRiver(false,FlowDirectionTypes.NO_FLOWDIRECTION)
+							plot:SetNWOfRiver(false,FlowDirectionTypes.NO_FLOWDIRECTION)
+							plot:SetNEOfRiver(false,FlowDirectionTypes.NO_FLOWDIRECTION)
+						end
+					end
+					x = x + 1;
+				end
+				y = y + 1;
 			end
 		end
 	end
@@ -10178,9 +12198,13 @@ function StartPlotSystem()
 	for x = 0, iW * 0.5 do
 		for y = 0, iH - 1 do
 			if( iW-x-y%2 ~= x ) then
-				print("x/y=",x,y);
 				local plot = Map.GetPlot(x, y);
 				local mirrorPlot = getMirroredPlot(plot);
+				local skipDest = false;
+				if plot ~= nil and mirrorPlot ~= nil then
+					skipDest = TongueSkipMirrorDest(x, y, mirrorPlot:GetX(), mirrorPlot:GetY());
+				end
+				if skipDest == false and plot ~= nil and mirrorPlot ~= nil then
 				local plotType = plot:GetPlotType();
 				local terrainType = plot:GetTerrainType();
 				local featureType = plot:GetFeatureType();
@@ -10188,12 +12212,14 @@ function StartPlotSystem()
 				local resourceType = plot:GetResourceType(-1)
 				mirrorPlot:SetPlotType(plotType,false,false)
 				mirrorPlot:SetTerrainType(terrainType,false,false)
-				mirrorPlot:SetFeatureType(featureType)
+				mirrorPlot:SetFeatureType(featureType, -1)
 				mirrorPlot:SetResourceType(resourceType,plot:GetNumResource())
 				mirrorPlot:SetImprovementType(improvementType)
+				end
 			end
 		end
 	end
+	TongueCopyHomePastMidToPair(true);
 	-- rivers
 	-- mirrorize rivers
 	--rivers
