@@ -560,6 +560,9 @@ end
 ------------------------------------------------------------------------------
 function GetShuffledCopyOfTable(incoming_table)
 	-- Designed to operate on tables with no gaps. Does not affect original table.
+	if incoming_table == nil then
+		return {};
+	end
 	local len = table.maxn(incoming_table);
 	local copy = {};
 	local shuffledVersion = {};

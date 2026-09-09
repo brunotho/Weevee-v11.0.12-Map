@@ -2426,7 +2426,7 @@ function AssignStartingPlots:EvaluateCandidatePlot(plotIndex, region_type)
 		
 	-- Check candidate plot for hills and river
 	local innerRingScore = 0;
-	local result = self:MeasureSinglePlot(searchX, searchY, region_type, 0)
+	local result = self:MeasureSinglePlot(x, y, region_type, 0)
 	if result[2] then
 		innerRingScore = innerRingScore + 4;
 		if result[5] then
@@ -2804,7 +2804,7 @@ function AssignStartingPlots:FindStart(region_number)
 			local plotType = plot:GetPlotType()
 			if plotType == PlotTypes.PLOT_HILLS or plotType == PlotTypes.PLOT_LAND then -- Could host a city.
 				-- Check if plot is two away from salt water.
-				if self.plotDataIsNextToCoast[plotIndex] == true then
+				if self.plotDataIsCoastal[plotIndex] == true or self.plotDataIsNextToCoast[plotIndex] == true then
 					table.insert(two_plots_from_ocean, plotIndex);
 				else
 					local area_of_plot = plot:GetArea();
@@ -8120,11 +8120,20 @@ end
 function AssignStartingPlots:AssignLuxuryToRegion(region_number)
 	-- Assigns a luxury type to an individual region.
 	local region_type = self.regionTypes[region_number];
+	if region_type == nil then
+		region_type = 0;
+	end
 	local luxury_candidates;
 	if region_type > 0 and region_type < 9 then -- Note: if number of Region Types is modified, this line and the table to which it refers need adjustment.
 		luxury_candidates = self.luxury_region_weights[region_type];
 	else
 		luxury_candidates = self.luxury_fallback_weights; -- Undefined Region, enable all possible luxury types.
+	end
+	if luxury_candidates == nil then
+		luxury_candidates = self.luxury_fallback_weights;
+	end
+	if luxury_candidates == nil then
+		luxury_candidates = {};
 	end
 	--
 	-- Build options list.
@@ -8132,36 +8141,42 @@ function AssignStartingPlots:AssignLuxuryToRegion(region_number)
 	local resource_IDs, resource_weights, res_threshold = {}, {}, {};
 	local split_cap = self:GetLuxuriesSplitCap() -- New for expansion. Cap no longer set to hardcoded value of 3.
 	
-	for index, resource_options in ipairs(luxury_candidates) do
+			for index, resource_options in ipairs(luxury_candidates) do
 		local res_ID = resource_options[1];
-		if self.luxury_assignment_count[res_ID] < split_cap then -- This type still eligible.
+		if res_ID ~= nil
+			and res_ID ~= self.banana_ID
+			and res_ID ~= self.wheat_ID
+			and res_ID ~= self.cow_ID
+			and res_ID ~= self.deer_ID
+			and res_ID ~= self.sheep_ID
+			and res_ID ~= self.fish_ID
+			and res_ID ~= self.stone_ID
+			and res_ID ~= self.maize_ID
+			and res_ID ~= self.hardwood_ID then
+			local nAss = self.luxury_assignment_count[res_ID];
+			if nAss == nil then
+				nAss = 0;
+			end
+			if nAss < split_cap then -- This type still eligible.
 			local test = TestMembership(self.resourceIDs_assigned_to_regions, res_ID)
 			if self.iNumTypesAssignedToRegions < self.iNumMaxAllowedForRegions or test == true then -- Not a new type that would exceed number of allowed types, so continue.
-				-- Water-based resources need to run a series of permission checks: coastal start in region, not a disallowed regions type, enough water, etc.
-				if res_ID == self.whale_ID or res_ID == self.pearls_ID or res_ID == self.crab_ID then
-					if res_ID == self.whale_ID and self.regionTypes[region_number] == 2 then
-						-- No whales in jungle regions, sorry
-					elseif res_ID == self.pearls_ID and self.regionTypes[region_number] == 1 then
-						-- No pearls in tundra regions, sorry
-					elseif res_ID == self.crab_ID and self.regionTypes[region_number] == 4 then
-						-- No crabs in desert regions, sorry
-					else
-						if self.startLocationConditions[region_number][1] == true then -- This region's start is along an ocean, so water-based luxuries are allowed.
-							if self.regionTerrainCounts[region_number][8] >= 90 then -- Set required water to 90 so it is not assigned as a regional.
-								table.insert(resource_IDs, res_ID);
-								local adjusted_weight = resource_options[2] / (0.1 + (self.luxury_assignment_count[res_ID]/2)) -- If selected before, for a different region, reduce weight.
-								table.insert(resource_weights, adjusted_weight);
-								iNumAvailableTypes = iNumAvailableTypes + 1;
-							end
-						end
+				-- Water-based resources: whale/pearls/crab/coral are eligible in every region type.
+				if res_ID == self.whale_ID or res_ID == self.pearls_ID or res_ID == self.crab_ID or res_ID == self.coral_ID then
+					table.insert(resource_IDs, res_ID);
+					local adjusted_weight = resource_options[2] / (0.1 + (nAss / 2));
+					if adjusted_weight < 1 then
+						adjusted_weight = 1;
 					end
+					table.insert(resource_weights, adjusted_weight);
+					iNumAvailableTypes = iNumAvailableTypes + 1;
 				-- Land-based resources are automatically approved if they were in the region's option table.
 				else
 					table.insert(resource_IDs, res_ID);
-					local adjusted_weight = resource_options[2] / (1 + self.luxury_assignment_count[res_ID])
+					local adjusted_weight = resource_options[2] / (1 + nAss)
 					table.insert(resource_weights, adjusted_weight);
 					iNumAvailableTypes = iNumAvailableTypes + 1;
 				end
+			end
 			end
 		end
 	end
@@ -8170,24 +8185,17 @@ function AssignStartingPlots:AssignLuxuryToRegion(region_number)
 	if iNumAvailableTypes == 0 then
 		for index, resource_options in ipairs(self.luxury_fallback_weights) do
 			local res_ID = resource_options[1];
-			if self.luxury_assignment_count[res_ID] < 3 then -- This type still eligible.
+			if res_ID ~= nil and self.luxury_assignment_count[res_ID] ~= nil and self.luxury_assignment_count[res_ID] < 3 then -- This type still eligible.
 				local test = TestMembership(self.resourceIDs_assigned_to_regions, res_ID)
 				if self.iNumTypesAssignedToRegions < self.iNumMaxAllowedForRegions or test == true then -- Won't exceed allowed types.
-					if res_ID == self.whale_ID or res_ID == self.pearls_ID then
-						if res_ID == self.whale_ID and self.regionTypes[region_number] == 2 then
-							-- No whales in jungle regions, sorry
-						elseif res_ID == self.pearls_ID and self.regionTypes[region_number] == 1 then
-							-- No pearls in tundra regions, sorry
-						else
-							if self.startLocationConditions[region_number][1] == true then -- This region's start is along an ocean, so water-based luxuries are allowed.
-								if self.regionTerrainCounts[region_number][8] >= 90 then -- Enough water available.
-									table.insert(resource_IDs, res_ID);
-									local adjusted_weight = resource_options[2] / (1 + self.luxury_assignment_count[res_ID]) --If selected before, for a different region, reduce weight.
-									table.insert(resource_weights, adjusted_weight);
-									iNumAvailableTypes = iNumAvailableTypes + 1;
-								end
-							end
+					if res_ID == self.whale_ID or res_ID == self.pearls_ID or res_ID == self.crab_ID or res_ID == self.coral_ID then
+						table.insert(resource_IDs, res_ID);
+						local adjusted_weight = resource_options[2] / (1 + self.luxury_assignment_count[res_ID]);
+						if adjusted_weight < 1 then
+							adjusted_weight = 1;
 						end
+						table.insert(resource_weights, adjusted_weight);
+						iNumAvailableTypes = iNumAvailableTypes + 1;
 					else
 						table.insert(resource_IDs, res_ID);
 						local adjusted_weight = resource_options[2] / (1 + self.luxury_assignment_count[res_ID])
@@ -8207,7 +8215,7 @@ function AssignStartingPlots:AssignLuxuryToRegion(region_number)
 		print("If you are modifying luxury types or number of regions allowed to get the same type, check to make sure your changes haven't violated the math so each region can have a legal assignment.");
 		for index, resource_options in ipairs(self.luxury_fallback_weights) do
 			local res_ID = resource_options[1];
-			if self.luxury_assignment_count[res_ID] < 3 then -- This type still eligible.
+			if res_ID ~= nil and self.luxury_assignment_count[res_ID] ~= nil and self.luxury_assignment_count[res_ID] < 3 then -- This type still eligible.
 				local test = TestMembership(self.resourceIDs_assigned_to_regions, res_ID)
 				if self.iNumTypesAssignedToRegions < self.iNumMaxAllowedForRegions or test == true then -- Won't exceed allowed types.
 					table.insert(resource_IDs, res_ID);
@@ -8303,7 +8311,13 @@ function AssignStartingPlots:AssignLuxuryRoles()
 		local resource_ID = self:AssignLuxuryToRegion(region_number)
 		self.regions_sorted_by_type[index][2] = resource_ID; -- This line applies the assignment.
 		self.region_luxury_assignment[region_number] = resource_ID;
-		self.luxury_assignment_count[resource_ID] = self.luxury_assignment_count[resource_ID] + 1; -- Track assignments
+		if resource_ID ~= nil then
+			local nAss = self.luxury_assignment_count[resource_ID];
+			if nAss == nil then
+				nAss = 0;
+			end
+			self.luxury_assignment_count[resource_ID] = nAss + 1; -- Track assignments
+		end
 		--
 		print("-"); print("Region#", region_number, " of type ", self.regionTypes[region_number], " has been assigned Luxury ID#", resource_ID);
 		--
@@ -8341,6 +8355,9 @@ function AssignStartingPlots:AssignLuxuryRoles()
 		local res_threshold = {};
 		for i, this_weight in ipairs(resource_weights) do
 			totalWeight = totalWeight + this_weight;
+		end
+		if totalWeight < 1 then
+			break
 		end
 		local accumulatedWeight = 0;
 		for index, weight in ipairs(resource_weights) do
@@ -9003,6 +9020,9 @@ function AssignStartingPlots:PlaceLuxuries()
 	for loop, reg_data in ipairs(self.regions_sorted_by_type) do
 		local region_number = reg_data[1];
 		local this_region_luxury = reg_data[2];
+		if self.startingPlots[region_number] == nil then
+			print("PlaceLuxuries skip, missing start for Region#", region_number);
+		else
 		local x = self.startingPlots[region_number][1];
 		local y = self.startingPlots[region_number][2];
 		print("-"); print("Attempting to place Luxury#", this_region_luxury, "at start plot", x, y, "in Region#", region_number);
@@ -9014,23 +9034,51 @@ function AssignStartingPlots:PlaceLuxuries()
 
 		rtoplace = 1;
 
-		if self.regionData[region_number][8] < 2.5 then -- Low fertility per region rectangle plot, add a lux. 2.5
+		if self.regionData[region_number] ~= nil and self.regionData[region_number][8] ~= nil and self.regionData[region_number][8] < 2.5 then -- Low fertility per region rectangle plot, add a lux. 2.5
 			print("-"); print("Region#", region_number, "has low rectangle fertility, giving it an extra Luxury at start plot.");
 			iNumToPlace = iNumToPlace + 1;
-			self.luxury_low_fert_compensation[this_region_luxury] = self.luxury_low_fert_compensation[this_region_luxury] + 1;
+			if this_region_luxury ~= nil then
+				local c = self.luxury_low_fert_compensation[this_region_luxury];
+				if c == nil then
+					c = 0;
+				end
+				self.luxury_low_fert_compensation[this_region_luxury] = c + 1;
+			end
+			if self.region_low_fert_compensation[region_number] == nil then
+				self.region_low_fert_compensation[region_number] = 0;
+			end
 			self.region_low_fert_compensation[region_number] = self.region_low_fert_compensation[region_number] + 1;
 		end
-		if self.regionData[region_number][6] / self.regionTerrainCounts[region_number][2] < 4 then -- Low fertility per land plot. 4
+		local landPlots = 0;
+		if self.regionTerrainCounts[region_number] ~= nil and self.regionTerrainCounts[region_number][2] ~= nil then
+			landPlots = self.regionTerrainCounts[region_number][2];
+		end
+		if landPlots > 0 and self.regionData[region_number] ~= nil and self.regionData[region_number][6] ~= nil and self.regionData[region_number][6] / landPlots < 4 then -- Low fertility per land plot. 4
 			print("-"); print("Region#", region_number, "has low per-plot fertility, giving it an extra Luxury at start plot.");
 			iNumToPlace = iNumToPlace + 1;
-			self.luxury_low_fert_compensation[this_region_luxury] = self.luxury_low_fert_compensation[this_region_luxury] + 1;
+			if this_region_luxury ~= nil then
+				local c = self.luxury_low_fert_compensation[this_region_luxury];
+				if c == nil then
+					c = 0;
+				end
+				self.luxury_low_fert_compensation[this_region_luxury] = c + 1;
+			end
+			if self.region_low_fert_compensation[region_number] == nil then
+				self.region_low_fert_compensation[region_number] = 0;
+			end
 			self.region_low_fert_compensation[region_number] = self.region_low_fert_compensation[region_number] + 1;
 		end
 
 		-- Obtain plot lists appropriate to this luxury type.
 		local primary, secondary, tertiary, quaternary, luxury_plot_lists, shuf_list;
 		primary, secondary, tertiary, quaternary = self:GetIndicesForLuxuryType(this_region_luxury);
+		if primary == nil or primary < 1 then
+			primary, secondary, tertiary, quaternary = 4, 10, 5, 11;
+		end
 		luxury_plot_lists = self:GenerateLuxuryPlotListsAtCitySite(x, y, 2, false)
+		if luxury_plot_lists == nil then
+			luxury_plot_lists = {};
+		end
 
 		-- First pass, checking only first two rings with a 50% ratio.
 		shuf_list = GetShuffledCopyOfTable(luxury_plot_lists[primary])
@@ -9072,11 +9120,18 @@ function AssignStartingPlots:PlaceLuxuries()
 			-- in the region somewhere. Subtract remainder from this region's compensation, so that the
 			-- regional process, later, will attempt to place this remainder somewhere in the region.
 			print("#####################"); print("Region#", region_number, "Failed To Place Regional Lux At Start");
-			self.luxury_low_fert_compensation[this_region_luxury] = self.luxury_low_fert_compensation[this_region_luxury] - iNumLeftToPlace;
+			if this_region_luxury ~= nil then
+				local c = self.luxury_low_fert_compensation[this_region_luxury];
+				if c == nil then
+					c = 0;
+				end
+				self.luxury_low_fert_compensation[this_region_luxury] = c - iNumLeftToPlace;
+			end
 			self.region_low_fert_compensation[region_number] = self.region_low_fert_compensation[region_number] - iNumLeftToPlace;
 			print("Left To Place: ", iNumLeftToPlace);
 			rtoplace = rtoplace + iNumLeftToPlace;
 			RndTable[region_number] = rtoplace;
+		end
 		end
 	end
 	
@@ -9199,6 +9254,9 @@ function AssignStartingPlots:PlaceLuxuries()
 				last_placed = use_this_ID;
 				
 				rtoplace = RndTable[region_number];
+				if rtoplace == nil then
+					rtoplace = 1;
+				end
 
 				if rtoplace > 2 then
 					acttoplace = 2;
@@ -9473,7 +9531,17 @@ function AssignStartingPlots:PlaceLuxuries()
 				local lux_share_of_remaining = math.ceil(iNumRandomLuxTarget * random_lux_ratios_table[self.iNumTypesRandom][loop]);
 				iNumThisLuxToPlace = math.max(lux_minimum, lux_share_of_remaining);
 			end
-			iNumThisLuxToPlace = 3;
+			if IsStandardClimate == nil or IsStandardClimate() == false then
+				iNumThisLuxToPlace = 1;
+				if loop <= 3 then
+					iNumThisLuxToPlace = 2;
+				end
+				if IsOasisClimate ~= nil and IsOasisClimate() then
+					iNumThisLuxToPlace = 2;
+				end
+			else
+				iNumThisLuxToPlace = 3;
+			end
 			-- Place this luxury type.
 			current_list = self.global_luxury_plot_lists[primary];
 			iNumLeftToPlace = self:PlaceSpecificNumberOfResources(res_ID, 1, iNumThisLuxToPlace, 0.5, 2, 3, 0, current_list);
@@ -10150,16 +10218,17 @@ function AssignStartingPlots:AddExtraBonusesToHillsRegions()
 		end
 		if table.maxn(flat_plains) > 0 then
 			local resources_to_place = {
-			{self.wheat_ID, 1, 100, 1, 2},
+			{self.wheat_ID, 1, 70, 1, 2},
+			{self.cow_ID, 1, 30, 1, 2},
 			{self.bison_ID, 1, 100, 0, 1} };
-			self:ProcessResourceList(18 / infertility_quotient, 3, flat_plains, resources_to_place)
+			self:ProcessResourceList(22 / infertility_quotient, 3, flat_plains, resources_to_place)
 		end
 		if table.maxn(flat_grass) > 0 then
 			local resources_to_place = {
-			{self.cow_ID, 1, 100, 1, 2},
-			{self.maize_ID, 1, 100, 1, 2}	
+			{self.cow_ID, 1, 75, 1, 2},
+			{self.maize_ID, 1, 25, 1, 2}	
 			};
-			self:ProcessResourceList(20 / infertility_quotient, 3, flat_grass, resources_to_place)
+			self:ProcessResourceList(18 / infertility_quotient, 3, flat_grass, resources_to_place)
 		end
 		if table.maxn(forests) > 0 then
 			local resources_to_place = {
@@ -10558,7 +10627,11 @@ function AssignStartingPlots:PlaceStrategicAndBonusResources()
 
 	local resources_to_place = {
 	{self.wheat_ID, 1, 100, 2, 3} };
-	self:ProcessResourceList(20 * bonus_multiplier, 3, self.plains_flat_no_feature, resources_to_place)
+	self:ProcessResourceList(26 * bonus_multiplier, 3, self.plains_flat_no_feature, resources_to_place)
+
+	local resources_to_place = {
+	{self.cow_ID, 1, 100, 2, 3} };
+	self:ProcessResourceList(16 * bonus_multiplier, 3, self.plains_flat_no_feature, resources_to_place)
 
 	local resources_to_place = {
 	{self.bison_ID, 1, 100, 2, 3} };
@@ -10566,7 +10639,7 @@ function AssignStartingPlots:PlaceStrategicAndBonusResources()
 
 	local resources_to_place = {
 	{self.cow_ID, 1, 100, 2, 3} };
-	self:ProcessResourceList(14 * bonus_multiplier, 3, self.dry_grass_flat_no_feature, resources_to_place)
+	self:ProcessResourceList(10 * bonus_multiplier, 3, self.dry_grass_flat_no_feature, resources_to_place)
 
 	local resources_to_place = {
 	{self.stone_ID, 1, 100, 1, 1} };
@@ -10606,7 +10679,7 @@ function AssignStartingPlots:PlaceStrategicAndBonusResources()
 	
 	local resources_to_place = {
 	{self.maize_ID, 1, 100, 1, 1} };
-	self:ProcessResourceList(22 * bonus_multiplier, 3, self.grass_flat_no_feature, resources_to_place)
+	self:ProcessResourceList(28 * bonus_multiplier, 3, self.grass_flat_no_feature, resources_to_place)
 	
 end
 ------------------------------------------------------------------------------
