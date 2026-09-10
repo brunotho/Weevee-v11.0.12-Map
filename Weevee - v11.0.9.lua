@@ -12,7 +12,7 @@ include("DEFMultilayeredFractalW");
 include("DEFFeatureGeneratorW");
 include("DEFTerrainGeneratorW");
 
-print("Weevee Map 11.0.8 script loaded");
+print("Weevee Map 11.0.9 script loaded");
 
 local weeveeDbgHandle = nil;
 local WEEVEE_DBG_PATHS = {
@@ -62,7 +62,7 @@ function WeeveeDbgCall(name, fn, a1, a2, a3, a4, a5)
 		WeeveeDbg("ERR " .. name .. " " .. tostring(err));
 	end
 end
-WeeveeDbg("script loaded 11.0.8");
+WeeveeDbg("script loaded 11.0.9");
 
 local OPT_CENTER_SPLIT = 1;
 local OPT_FRONT_MOUNTAIN = 2;
@@ -118,7 +118,7 @@ end
 ------------------------------------------------------------------------------
 function GetMapScriptInfo()
 	return {
-		Name = "[COLOR_HIGHLIGHT_TEXT] Weevee Map 11.0.8 [ENDCOLOR]",
+		Name = "[COLOR_HIGHLIGHT_TEXT] Weevee Map 11.0.9 [ENDCOLOR]",
 		Description = "",
 		IsAdvancedMap = false,
 		SupportsMultiplayer = true,
@@ -2569,6 +2569,15 @@ function ResetWeeveeGenState()
 	weeveeStartDistFail = false;
 end
 function ResetWeeveeMapAttempt()
+	local iW, iH = Map.GetGridSize();
+	for y = 0, iH - 1 do
+		for x = 0, iW - 1 do
+			local plot = Map.GetPlot(x, y);
+			if plot ~= nil and plot:GetResourceType(-1) ~= -1 then
+				plot:SetResourceType(-1);
+			end
+		end
+	end
 	saltPlanResolved = false;
 	snowWrapWidthResolved = false;
 	climateScaleResolved = false;
@@ -6962,7 +6971,7 @@ end
 function LuxuryQuotaMet()
 	local counts, nUnique, nDup, nTrip = GatherLuxuryTiers();
 	local wantU, wantD, wantT = ResolveLuxTargets();
-	if IsOasisClimate() == false then
+	if IsStandardClimate() then
 		return true, nUnique, nDup, nTrip;
 	end
 	return (nUnique >= wantU and nDup >= wantD and nTrip >= wantT), nUnique, nDup, nTrip;
@@ -7140,7 +7149,7 @@ function EnsureLuxuryQuota()
 	end
 	local counts, nUnique, nDup, nTrip = GatherLuxuryTiers();
 	local wantU, wantD, wantT = ResolveLuxTargets();
-	if nUnique < wantU and IsOasisClimate() then
+	if IsOasisClimate() and nUnique < wantU then
 		local unused = {};
 		for res in GameInfo.Resources() do
 			if IsWeeveeLuxuryID(res.ID) and counts[res.ID] == nil and banned[res.ID] ~= true then
@@ -7153,6 +7162,23 @@ function EnsureLuxuryQuota()
 		local ui = 1;
 		while nUnique < wantU and ui <= #unused do
 			if tryPlaceHard(unused[ui], 3, 5) or tryPlaceHard(unused[ui], 2, 4) then
+				nUnique = nUnique + 1;
+			end
+			ui = ui + 1;
+		end
+	elseif IsStandardClimate() == false and nUnique < wantU then
+		local unused = {};
+		for res in GameInfo.Resources() do
+			if IsWeeveeLuxuryID(res.ID) and counts[res.ID] == nil and banned[res.ID] ~= true then
+				table.insert(unused, res.ID);
+			end
+		end
+		if #unused > 1 then
+			unused = GetShuffledCopyOfTable(unused);
+		end
+		local ui = 1;
+		while nUnique < wantU and ui <= #unused do
+			if tryPlace(unused[ui], 3, 5) or tryPlace(unused[ui], 2, 4) then
 				nUnique = nUnique + 1;
 			end
 			ui = ui + 1;
@@ -14742,10 +14768,6 @@ function PeakGrowForest(seed, target, skip, mirrored, iW, massifId)
 end
 ------------------------------------------------------------------------------
 function ForestMountainsToBareTarget()
-	local cfg = GetBarrierConfig();
-	if cfg == nil or cfg.kind ~= "peaks" then
-		return
-	end
 	local iW, iH = Map.GetGridSize();
 	local skip = FillMireSkip(iW);
 	local mirrored = (DEF_MIRRORED == 1);
@@ -14756,7 +14778,7 @@ function ForestMountainsToBareTarget()
 	if bareWant < 1 then
 		bareWant = 1;
 	end
-	local scored = {};
+	local mtns = {};
 	local y = 0;
 	while y < iH do
 		local x = 0;
@@ -14764,42 +14786,27 @@ function ForestMountainsToBareTarget()
 			if skip[x] ~= true and MirrorOwnsPlot(x, y, mirrored, iW) then
 				local plot = Map.GetPlot(x, y);
 				if plot ~= nil and plot:GetPlotType() == PlotTypes.PLOT_MOUNTAIN and PlotHasNaturalWonder(plot) ~= true then
-					local nFor = 0;
-					local d = 0;
-					while d < DirectionTypes.NUM_DIRECTION_TYPES do
-						local adj = PlotDirNoXWrap(x, y, d);
-						if adj ~= nil
-							and adj:GetPlotType() ~= PlotTypes.PLOT_MOUNTAIN
-							and adj:GetFeatureType() == FeatureTypes.FEATURE_FOREST then
-							nFor = nFor + 1;
-						end
-						d = d + 1;
-					end
-					table.insert(scored, {plot, nFor});
+					table.insert(mtns, plot);
 				end
 			end
 			x = x + 1;
 		end
 		y = y + 1;
 	end
-	local nMtn = #scored;
+	local nMtn = #mtns;
 	if nMtn < 1 then
-		print("Peaks mountain forest: 0 mountains");
 		return
 	end
 	if bareWant > nMtn then
 		bareWant = nMtn;
 	end
-	table.sort(scored, function(a, b)
-		if a[2] == b[2] then
-			return false
-		end
-		return a[2] > b[2]
-	end);
 	local nForest = nMtn - bareWant;
+	if nMtn > 1 then
+		mtns = GetShuffledCopyOfTable(mtns);
+	end
 	local i = 1;
 	while i <= nMtn do
-		local plot = scored[i][1];
+		local plot = mtns[i];
 		if i <= nForest then
 			if plot:GetFeatureType() ~= FeatureTypes.FEATURE_FOREST then
 				plot:SetFeatureType(FeatureTypes.FEATURE_FOREST, -1);
@@ -14811,7 +14818,7 @@ function ForestMountainsToBareTarget()
 		end
 		i = i + 1;
 	end
-	print("Peaks mountain forest:", nForest, "bare:", bareWant, "of", nMtn);
+	print("Mountain forest:", nForest, "forested bare:", bareWant, "of", nMtn);
 end
 ------------------------------------------------------------------------------
 function AddPeaksMassifForests()
