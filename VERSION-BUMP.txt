@@ -24,8 +24,11 @@ Agent steps (in order)
 ----------------------
 1. Confirm the new version number with the user if they did not give one.
    Default next is the "Next version" line above.
-2. Update GetMapScriptInfo Name in the map lua to:
-     [COLOR_HIGHLIGHT_TEXT] Weevee Map X.Y.Z [ENDCOLOR]
+2. Update in the map lua:
+     print("Weevee Map X.Y.Z script loaded");
+     WeeveeDbg("script loaded X.Y.Z");
+     GetMapScriptInfo Name =
+       [COLOR_HIGHLIGHT_TEXT] Weevee Map X.Y.Z [ENDCOLOR]
 3. git mv the map lua:
      Weevee - vOLD.lua  ->  Weevee - vX.Y.Z.lua
 4. Update this file: set Current version, set Next version (patch +1).
