@@ -9016,9 +9016,9 @@ function AssignStartingPlots:PlaceLuxuries()
 		local y = self.startingPlots[region_number][2];
 		print("-"); print("Attempting to place Luxury#", this_region_luxury, "at start plot", x, y, "in Region#", region_number);
 		-- Determine number to place at the start location
-		local iNumToPlace = 2;
+		local iNumToPlace = 3;
 		if self.resource_setting == 4 then -- Legendary Start
-			iNumToPlace = 2;
+			iNumToPlace = 3;
 		end
 
 		rtoplace = 1;
@@ -9131,8 +9131,8 @@ function AssignStartingPlots:PlaceLuxuries()
 	-- Marble is included in the types possible to be placed.
 	if self.resource_setting ~= 1 then
 		for region_number = 1, self.iNumCivs do
-			if Map.Rand(100, "Second start lux") >= 18 then
-				print("Skip second luxury Region#", region_number);
+			if self.startingPlots[region_number] == nil or self.startingPlots[region_number][1] == nil then
+				print("Second luxury skip, missing start for Region#", region_number);
 			else
 			local x = self.startingPlots[region_number][1];
 			local y = self.startingPlots[region_number][2];
@@ -9243,19 +9243,8 @@ function AssignStartingPlots:PlaceLuxuries()
 				
 				last_placed = use_this_ID;
 				
-				rtoplace = RndTable[region_number];
-				if rtoplace == nil then
-					rtoplace = 1;
-				end
-
-				if rtoplace > 2 then
-					acttoplace = 2;
-					lefttoplace = rtoplace - acttoplace;
-					rmore = true;
-				else
-					acttoplace = rtoplace;
-					lefttoplace = 0;
-				end
+				acttoplace = 1;
+				lefttoplace = 0;
 
 				print("############### RANDOMS ###############");
 				print("Rnds To Place: ", rtoplace);
@@ -9301,10 +9290,7 @@ function AssignStartingPlots:PlaceLuxuries()
 				end
 			end
 			if secondLuxOk == false then
-				local nFail = rtoplace;
-				if nFail == nil or nFail < 1 then
-					nFail = 1;
-				end
+				local nFail = 1;
 				self.unplacedCapitalLux = self.unplacedCapitalLux + nFail;
 				print("Capital luxury shortfall Region#", region_number, nFail);
 			end

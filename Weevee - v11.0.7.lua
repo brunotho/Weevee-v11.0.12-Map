@@ -464,6 +464,43 @@ function IsOasisClimate()
 	return cfg ~= nil and cfg.kind == "desert";
 end
 ------------------------------------------------------------------------------
+function OasisNonDesertLandAdj(x, y)
+	local n = 0;
+	local d = 0;
+	while d < DirectionTypes.NUM_DIRECTION_TYPES do
+		local adj = PlotDirNoXWrap(x, y, d);
+		if adj ~= nil
+			and adj:IsWater() == false
+			and adj:GetPlotType() ~= PlotTypes.PLOT_MOUNTAIN
+			and adj:GetTerrainType() ~= TerrainTypes.TERRAIN_DESERT then
+			n = n + 1;
+		end
+		d = d + 1;
+	end
+	return n
+end
+------------------------------------------------------------------------------
+function OasisLuxuryWithin(x, y, maxD)
+	if maxD == nil or maxD < 1 then
+		maxD = 1
+	end
+	local dy = y - maxD
+	while dy <= y + maxD do
+		local dx = x - maxD
+		while dx <= x + maxD do
+			if Map.PlotDistance(x, y, dx, dy) <= maxD then
+				local p = Map.GetPlot(dx, dy)
+				if p ~= nil and IsWeeveeLuxuryID(p:GetResourceType(-1)) then
+					return true
+				end
+			end
+			dx = dx + 1
+		end
+		dy = dy + 1
+	end
+	return false
+end
+------------------------------------------------------------------------------
 function OasisWestDesertColumns()
 	return 8;
 end
@@ -2067,7 +2104,7 @@ function MaybePlaceStartTileResource(asp)
 								local resID = plot:GetResourceType(-1);
 								if resID ~= -1 then
 									local usage = Game.GetResourceUsageType(resID);
-									if usage == ResourceUsageTypes.RESOURCEUSAGE_BONUS or usage == ResourceUsageTypes.RESOURCEUSAGE_LUXURY then
+									if usage == ResourceUsageTypes.RESOURCEUSAGE_BONUS then
 										if startPlot:CanHaveResource(resID) then
 											table.insert(candidates, plot);
 										end
@@ -2142,7 +2179,8 @@ function OasisStartOk(x, y)
 	if OasisIsWestHinterlandX(x, iW) then
 		return false
 	end
-	if OasisJungleExists() and OasisInJunglePocket(x, y) == false then
+	local skip = FillMireSkip(iW);
+	if skip[x] == true then
 		return false
 	end
 	if SaltWaterWithin(x, y, 2) then
@@ -2152,17 +2190,33 @@ function OasisStartOk(x, y)
 	local d = 0;
 	while d < DirectionTypes.NUM_DIRECTION_TYPES do
 		local adj = PlotDirNoXWrap(x, y, d);
-		if adj ~= nil then
-			if adj:GetTerrainType() ~= TerrainTypes.TERRAIN_DESERT then
-				nNonDesert = nNonDesert + 1;
-			end
+		if adj ~= nil
+			and adj:IsWater() == false
+			and adj:GetPlotType() ~= PlotTypes.PLOT_MOUNTAIN
+			and adj:GetTerrainType() ~= TerrainTypes.TERRAIN_DESERT then
+			nNonDesert = nNonDesert + 1;
 		end
 		d = d + 1;
 	end
 	return nNonDesert >= 2;
 end
 ------------------------------------------------------------------------------
-function FindNearestStartOffEdge(sx, sy)
+function StartMinDistToList(x, y, others)
+	local best = 9999;
+	local i = 1;
+	while i <= #others do
+		if others[i][1] ~= nil and others[i][2] ~= nil then
+			local d = Map.PlotDistance(x, y, others[i][1], others[i][2]);
+			if d < best then
+				best = d;
+			end
+		end
+		i = i + 1;
+	end
+	return best
+end
+------------------------------------------------------------------------------
+function FindNearestStartOffEdge(sx, sy, others)
 	local iW, iH = Map.GetGridSize();
 	local mid = math.floor(iW / 2);
 	local x0 = 0;
@@ -2175,9 +2229,16 @@ function FindNearestStartOffEdge(sx, sy)
 		end
 	end
 	local cfg = GetBarrierConfig();
+	if others == nil then
+		others = {};
+	end
 	local bestX = nil;
 	local bestY = nil;
 	local bestD = 9999;
+	local bestSepX = nil;
+	local bestSepY = nil;
+	local bestSep = -1;
+	local bestSepNear = 9999;
 	local y = 0;
 	while y < iH do
 		if StartYAllowed(y, iH) then
@@ -2200,10 +2261,17 @@ function FindNearestStartOffEdge(sx, sy)
 					end
 					if ok then
 						local d = Map.PlotDistance(sx, sy, x, y);
-						if d < bestD then
+						local sep = StartMinDistToList(x, y, others);
+						if sep >= 6 and d < bestD then
 							bestD = d;
 							bestX = x;
 							bestY = y;
+						end
+						if sep > bestSep or (sep == bestSep and d < bestSepNear) then
+							bestSep = sep;
+							bestSepNear = d;
+							bestSepX = x;
+							bestSepY = y;
 						end
 					end
 				end
@@ -2212,7 +2280,53 @@ function FindNearestStartOffEdge(sx, sy)
 		end
 		y = y + 1;
 	end
-	return bestX, bestY;
+	if bestX ~= nil then
+		return bestX, bestY;
+	end
+	return bestSepX, bestSepY;
+end
+------------------------------------------------------------------------------
+function OasisSpreadStarts(asp)
+	if IsOasisClimate() == false then
+		return
+	end
+	if asp == nil or asp.startingPlots == nil then
+		return
+	end
+	local iW = Map.GetGridSize();
+	local mid = math.floor(iW / 2);
+	local pass = 1;
+	while pass <= 12 do
+		local moved = false;
+		local r = 1;
+		while asp.startingPlots[r] ~= nil do
+			local sp = asp.startingPlots[r];
+			if sp[1] ~= nil and sp[1] < mid then
+				local others = {};
+				local o = 1;
+				while asp.startingPlots[o] ~= nil do
+					if o ~= r then
+						table.insert(others, {asp.startingPlots[o][1], asp.startingPlots[o][2]});
+					end
+					o = o + 1;
+				end
+				local dMin = StartMinDistToList(sp[1], sp[2], others);
+				if dMin < 6 then
+					local nx, ny = FindNearestStartOffEdge(sp[1], sp[2], others);
+					if nx ~= nil and (nx ~= sp[1] or ny ~= sp[2]) then
+						asp.startingPlots[r] = {nx, ny, 1};
+						print("Oasis start spread region", r, "from", sp[1], sp[2], "to", nx, ny, "was", dMin);
+						moved = true;
+					end
+				end
+			end
+			r = r + 1;
+		end
+		if moved == false then
+			break
+		end
+		pass = pass + 1;
+	end
 end
 ------------------------------------------------------------------------------
 function ClampAspStartsOffEdges(asp)
@@ -2240,7 +2354,15 @@ function ClampAspStartsOffEdges(asp)
 				needMove = true;
 			end
 			if needMove then
-				local nx, ny = FindNearestStartOffEdge(sx, sy);
+				local others = {};
+				local o = 1;
+				while asp.startingPlots[o] ~= nil do
+					if o ~= r then
+						table.insert(others, {asp.startingPlots[o][1], asp.startingPlots[o][2]});
+					end
+					o = o + 1;
+				end
+				local nx, ny = FindNearestStartOffEdge(sx, sy, others);
 				if nx ~= nil then
 					asp.startingPlots[r] = {nx, ny, 1};
 					print("Start moved off edge/tongue region", r, "from", sx, sy, "to", nx, ny);
@@ -2265,7 +2387,18 @@ function ClampPlayerStartsOffEdges()
 			local sx = plot:GetX();
 			local sy = plot:GetY();
 			if StartYAllowed(sy, iH) == false or TongueStartTooClose(sx, sy) or OasisStartOk(sx, sy) == false or SaltWaterWithin(sx, sy, 1) then
-				local nx, ny = FindNearestStartOffEdge(sx, sy);
+				local others = {};
+				local j = 0;
+				while j < nMaj do
+					if j ~= i then
+						local op = Players[j];
+						if op ~= nil and op:IsAlive() and op:GetStartingPlot() ~= nil then
+							table.insert(others, {op:GetStartingPlot():GetX(), op:GetStartingPlot():GetY()});
+						end
+					end
+					j = j + 1;
+				end
+				local nx, ny = FindNearestStartOffEdge(sx, sy, others);
 				if nx ~= nil then
 					player:SetStartingPlot(Map.GetPlot(nx, ny));
 					print("Player start moved off edge/tongue", i, "from", sx, sy, "to", nx, ny);
@@ -2298,7 +2431,14 @@ function AssignStartingPlots:EvaluateCandidatePlot(plotIndex, region_type)
 			return -200, false;
 		end
 	end
-	return EvaluateCandidatePlotVanilla(self, plotIndex, region_type);
+	local score, ok = EvaluateCandidatePlotVanilla(self, plotIndex, region_type);
+	if OasisStartOk(x, y) == false then
+		if score == nil or score < 1 then
+			score = 1;
+		end
+		return score, false;
+	end
+	return score, ok;
 end
 local MeasureFertilityOfPlotVanilla = AssignStartingPlots.MeasureStartPlacementFertilityOfPlot;
 function AssignStartingPlots:MeasureStartPlacementFertilityOfPlot(x, y, checkForCoastalLand)
@@ -2310,9 +2450,49 @@ function AssignStartingPlots:MeasureStartPlacementFertilityOfPlot(x, y, checkFor
 	end
 	return MeasureFertilityOfPlotVanilla(self, x, y, checkForCoastalLand);
 end
+local PlaceImpactAndRipplesVanilla = AssignStartingPlots.PlaceImpactAndRipples;
+function AssignStartingPlots:PlaceImpactAndRipples(x, y)
+	if x == nil or y == nil then
+		return
+	end
+	return PlaceImpactAndRipplesVanilla(self, x, y);
+end
+-- Oasis: bump deferred lux (impact 2, max_radius ≤ 1) to at least ripple 1.
+-- Do NOT convert impact -1: that ignore-overlay path is how vanilla plants
+-- regionals on the capital after PlaceImpactAndRipples already stamped r=3.
+local PlaceSpecificNumberOfResourcesVanilla = AssignStartingPlots.PlaceSpecificNumberOfResources;
+function AssignStartingPlots:PlaceSpecificNumberOfResources(resource_ID, quantity, amount, ratio, impact_table_number, min_radius, max_radius, plot_list)
+	if IsOasisClimate() and IsWeeveeLuxuryID(resource_ID) then
+		if impact_table_number == 2 then
+			local maxR = max_radius;
+			if maxR == nil then
+				maxR = min_radius;
+			end
+			if maxR <= 1 then
+				if min_radius == nil or min_radius < 1 then
+					min_radius = 1;
+				end
+				if max_radius == nil or max_radius < 1 then
+					max_radius = 1;
+				end
+			end
+		end
+	end
+	return PlaceSpecificNumberOfResourcesVanilla(self, resource_ID, quantity, amount, ratio, impact_table_number, min_radius, max_radius, plot_list);
+end
 local FindStartVanilla = AssignStartingPlots.FindStart;
 function AssignStartingPlots:FindStart(region_number)
 	local ok, forced = FindStartVanilla(self, region_number);
+	if self.startingPlots[region_number] ~= nil then
+		local sp = self.startingPlots[region_number];
+		if sp[1] == nil or sp[2] == nil then
+			local nx, ny = FindNearestStartOffEdge(0, 0, {});
+			if nx ~= nil then
+				self.startingPlots[region_number] = {nx, ny, 1};
+				self:PlaceImpactAndRipples(nx, ny);
+			end
+		end
+	end
 	if ok and self.startingPlots[region_number] ~= nil then
 		local sx = self.startingPlots[region_number][1];
 		local sy = self.startingPlots[region_number][2];
@@ -2557,17 +2737,26 @@ function OasisJungleOval(iW, iH)
 	if frontX < maxX then
 		frontX = maxX;
 	end
-	local rx = (maxX - minX) * 0.34;
-	local ry = iH * 0.17;
+	local hinter = OasisWestDesertColumns();
+	if minX < hinter then
+		minX = hinter;
+	end
+	local playW = frontX - hinter;
+	if playW < 8 then
+		playW = 8;
+	end
+	local lushRad = math.sqrt(0.90);
+	local rx = playW * 0.42 * lushRad;
+	local ry = iH * 0.26 * lushRad;
 	if rx < 2 then
 		rx = 2;
 	end
 	if ry < 2 then
 		ry = 2;
 	end
-	local cx = frontX - rx * 0.42;
+	local cx = frontX - rx * 0.88;
 	local cy = (iH - 1) / 2;
-	local maxDy = math.floor(iH * 0.2975);
+	local maxDy = math.floor(iH * 0.35 * lushRad);
 	local yLo = cy - maxDy;
 	local yHi = cy + maxDy;
 	if yLo < 0 then
@@ -2583,189 +2772,174 @@ function PlaceOasisCrescentSeas(plotTypes, iW, iH)
 	if plotTypes == nil or IsOasisClimate() == false then
 		return
 	end
-	local _, _, minX, maxX, frontX, cx, cy, rx, ry, yLo, yHi, maxDy, mid = OasisJungleOval(iW, iH);
+	local _, _, minX, maxX, frontX, cx, cy, rx, ry = OasisJungleOval(iW, iH);
 	local hinter = OasisWestDesertColumns();
-	if minX < hinter then
-		minX = hinter;
+	local wrx = rx * 1.15 * 1.15;
+	local wry = ry * 1.15 * 1.15;
+	local cyEdge = cy;
+	if cyEdge < 1 then
+		cyEdge = 1;
 	end
-	local eastLim = math.floor(cx - rx * 0.08);
-	if eastLim > mid - 2 then
-		eastLim = mid - 2;
+	local wryEdge = cyEdge / math.sqrt(1.90);
+	if wry < wryEdge then
+		wry = wryEdge;
 	end
-	if eastLim < hinter + 3 then
-		eastLim = hinter + 3;
+	if wrx < 2 then
+		wrx = 2;
+	end
+	if wry < 2 then
+		wry = 2;
 	end
 	local evenN = {{0, 1}, {1, 0}, {0, -1}, {-1, -1}, {-1, 0}, {-1, 1}};
 	local oddN = {{1, 1}, {1, 0}, {1, -1}, {0, -1}, {-1, 0}, {0, 1}};
-	local nBodies = 3 + Map.Rand(2, "Oasis Crescent Count");
-	if Map.Rand(4, "Oasis Crescent Extra") == 0 then
-		nBodies = nBodies + 1;
+	local function hexDirs(y)
+		if y % 2 ~= 0 then
+			return oddN
+		end
+		return evenN
 	end
+	local function onCrescent(x, y)
+		if x < hinter or x > frontX or y < 0 or y > iH - 1 then
+			return false
+		end
+		if WaterAllowedAtX(x) == false then
+			return false
+		end
+		local ux = (x - cx) / wrx;
+		local uy = (y - cy) / wry;
+		local r2 = ux * ux + uy * uy;
+		if r2 < 0.90 then
+			return false
+		end
+		if ux > 0.22 and uy * uy < 0.50 then
+			return false
+		end
+		if r2 <= 1.90 then
+			return true
+		end
+		if uy * uy >= 1.0 and ux <= 0.22 and ux >= -1.90 then
+			return true
+		end
+		return false
+	end
+	local function foreignOceanWithin(x, y, maxD, blobSet)
+		if maxD == nil or maxD < 1 then
+			return false
+		end
+		local dy = y - maxD;
+		while dy <= y + maxD do
+			local dx = x - maxD;
+			while dx <= x + maxD do
+				if dx >= 0 and dx < iW and dy >= 0 and dy < iH then
+					if Map.PlotDistance(x, y, dx, dy) <= maxD then
+						local idx = dy * iW + dx + 1;
+						if plotTypes[idx] == PlotTypes.PLOT_OCEAN then
+							if blobSet == nil or blobSet[idx] ~= true then
+								return true
+							end
+						end
+					end
+				end
+				dx = dx + 1;
+			end
+			dy = dy + 1;
+		end
+		return false
+	end
+	local north = {};
+	local south = {};
+	local west = {};
+	local all = {};
+	local y = 0;
+	while y < iH do
+		local x = hinter;
+		while x <= frontX do
+			if onCrescent(x, y) then
+				local idx = y * iW + x + 1;
+				local ptype = plotTypes[idx];
+				if ptype ~= PlotTypes.PLOT_MOUNTAIN and ptype ~= PlotTypes.PLOT_OCEAN then
+					local t = {x, y, idx};
+					table.insert(all, t);
+					if y <= cy - wry * 0.35 then
+						table.insert(south, t);
+					elseif y >= cy + wry * 0.35 then
+						table.insert(north, t);
+					elseif x <= cx then
+						table.insert(west, t);
+					end
+				end
+			end
+			x = x + 1;
+		end
+		y = y + 1;
+	end
+	if #all < 8 then
+		print("Oasis crescent seas: no ring tiles", #all);
+		return
+	end
+	local nBodies = 5 + Map.Rand(3, "Oasis Crescent Count");
 	local nPaint = 0;
 	local nOk = 0;
 	local b = 1;
 	while b <= nBodies do
-		local slot = Map.Rand(5, "Oasis Sea Slot");
-		if b == 1 then
-			slot = 2;
-		elseif b == 2 then
-			slot = 3;
+		local pool = all;
+		if b == 1 and #south > 0 then
+			pool = south;
+		elseif b == 2 and #north > 0 then
+			pool = north;
+		elseif b == 3 and #west > 0 then
+			pool = west;
 		end
-		local ringMin = 1.08;
-		if Map.Rand(100, "Oasis Sea Touch") < 22 then
-			ringMin = 0.96;
-		end
-		local ringMax = 2.35;
-		local sx = hinter;
-		local sy = math.floor(cy);
-		if slot == 2 then
-			sy = 0;
-			sx = math.floor(cx - rx * 0.92 + 0.5);
-		elseif slot == 3 then
-			sy = iH - 1;
-			sx = math.floor(cx - rx * 0.92 + 0.5);
-		else
-			local t = (b - 0.5) / nBodies + (Map.Rand(13, "Oasis Sea T") - 6) / 90;
-			if t < 0 then
-				t = 0;
-			end
-			if t > 1 then
-				t = 1;
-			end
-			local theta = 3.14159265 + (t - 0.5) * 2.35;
-			local rMul = ringMin + Map.Rand(26, "Oasis Crescent R") / 100;
-			sx = math.floor(cx + rx * rMul * math.cos(theta) + 0.5);
-			sy = math.floor(cy + ry * rMul * math.sin(theta) + 0.5);
-			sx = sx + Map.Rand(3, "Oasis Sea XJ") - 1;
-		end
-		if sy < 0 then
-			sy = 0;
-		end
-		if sy > iH - 1 then
-			sy = iH - 1;
-		end
-		if sx < hinter then
-			sx = hinter;
-		end
-		if sx > eastLim then
-			sx = eastLim;
-		end
-		local seedX = nil;
-		local seedY = nil;
-		local edgeMode = (slot == 2 or slot == 3);
+		local seed = nil;
+		local seedGap = 1 + Map.Rand(4, "Oasis Sea Gap");
 		local attempt = 1;
-		while attempt <= 80 do
-			local tx = sx;
-			local ty = sy;
-			if attempt > 1 then
-				local spanX = math.floor(rx * 0.55);
-				if spanX < 3 then
-					spanX = 3;
-				end
-				local spanY = math.floor(ry * 0.7);
-				if spanY < 2 then
-					spanY = 2;
-				end
-				if edgeMode then
-					spanY = 2;
-					spanX = math.floor(rx * 0.22);
-					if spanX < 2 then
-						spanX = 2;
-					end
-				end
-				tx = sx + Map.Rand(spanX * 2 + 1, "Oasis Crescent SeedX") - spanX;
-				ty = sy + Map.Rand(spanY * 2 + 1, "Oasis Crescent SeedY") - spanY;
+		while attempt <= 90 and seed == nil do
+			if #pool < 1 then
+				pool = all;
 			end
-			if tx >= hinter and tx <= eastLim and ty >= 0 and ty <= iH - 1 then
-				if WaterAllowedAtX(tx) then
-					local ok = false;
-					if edgeMode then
-						if slot == 2 and ty <= 2 then
-							ok = true;
-						end
-						if slot == 3 and ty >= iH - 3 then
-							ok = true;
-						end
-					else
-						local dx = (tx - cx) / rx;
-						local dy = (ty - cy) / ry;
-						local d2 = dx * dx + dy * dy;
-						if d2 >= ringMin and d2 <= ringMax then
-							ok = true;
-						end
-					end
-					if ok then
-						local ptype = plotTypes[ty * iW + tx + 1];
-						if ptype ~= PlotTypes.PLOT_MOUNTAIN then
-							seedX = tx;
-							seedY = ty;
-							break
-						end
-					end
+			if #pool < 1 then
+				break
+			end
+			local t = pool[Map.Rand(#pool, "Oasis Crescent Seed") + 1];
+			if plotTypes[t[3]] ~= PlotTypes.PLOT_OCEAN and plotTypes[t[3]] ~= PlotTypes.PLOT_MOUNTAIN then
+				if onCrescent(t[1], t[2]) and foreignOceanWithin(t[1], t[2], seedGap, nil) == false then
+					seed = t;
 				end
+			end
+			if seed == nil and attempt == 45 and seedGap > 1 then
+				seedGap = seedGap - 1;
 			end
 			attempt = attempt + 1;
 		end
-		if seedX ~= nil then
+		if seed ~= nil then
 			nOk = nOk + 1;
-			local lakeSize = 4 + Map.Rand(7, "Oasis Crescent Size");
-			local blob = {{seedX, seedY}};
-			local idx0 = seedY * iW + seedX + 1;
-			if plotTypes[idx0] ~= PlotTypes.PLOT_OCEAN then
-				plotTypes[idx0] = PlotTypes.PLOT_OCEAN;
-				nPaint = nPaint + 1;
-			end
+			local lakeSize = 5 + Map.Rand(5, "Oasis Crescent Size");
+			local blob = {{seed[1], seed[2]}};
+			local blobSet = {};
+			blobSet[seed[3]] = true;
+			plotTypes[seed[3]] = PlotTypes.PLOT_OCEAN;
+			nPaint = nPaint + 1;
 			local grown = 1;
 			local step = 0;
-			local growMin = ringMin - 0.06;
-			if growMin < 0.9 then
-				growMin = 0.9;
-			end
 			while grown < lakeSize do
 				step = step + 1;
-				if step > 90 then
+				if step > 110 then
 					break
 				end
 				local candidates = {};
 				local pIndex = 1;
 				while pIndex <= #blob do
 					local p = blob[pIndex];
-					local dirs = evenN;
-					if p[2] % 2 ~= 0 then
-						dirs = oddN;
-					end
+					local dirs = hexDirs(p[2]);
 					local dIndex = 1;
 					while dIndex <= 6 do
 						local nx = p[1] + dirs[dIndex][1];
 						local ny = p[2] + dirs[dIndex][2];
-						if nx >= hinter and nx <= eastLim and ny >= 0 and ny <= iH - 1 then
-							if WaterAllowedAtX(nx) then
-								local okGrow = false;
-								if edgeMode then
-									local dx = (nx - cx) / rx;
-									local dy = (ny - cy) / ry;
-									local d2 = dx * dx + dy * dy;
-									if d2 >= growMin * 0.8 and d2 <= ringMax + 0.35 then
-										if slot == 2 and ny <= 4 then
-											okGrow = true;
-										end
-										if slot == 3 and ny >= iH - 5 then
-											okGrow = true;
-										end
-									end
-								else
-									local dx = (nx - cx) / rx;
-									local dy = (ny - cy) / ry;
-									local d2 = dx * dx + dy * dy;
-									if d2 >= growMin and d2 <= ringMax then
-										okGrow = true;
-									end
-								end
-								if okGrow then
-									local nidx = ny * iW + nx + 1;
-									if plotTypes[nidx] ~= PlotTypes.PLOT_OCEAN and plotTypes[nidx] ~= PlotTypes.PLOT_MOUNTAIN then
-										table.insert(candidates, {nx, ny, nidx});
-									end
+						if onCrescent(nx, ny) then
+							local nidx = ny * iW + nx + 1;
+							if plotTypes[nidx] ~= PlotTypes.PLOT_OCEAN and plotTypes[nidx] ~= PlotTypes.PLOT_MOUNTAIN then
+								if foreignOceanWithin(nx, ny, seedGap, blobSet) == false then
+									table.insert(candidates, {nx, ny, nidx});
 								end
 							end
 						end
@@ -2780,6 +2954,7 @@ function PlaceOasisCrescentSeas(plotTypes, iW, iH)
 				local pick = candidates[Map.Rand(nCands, "Oasis Crescent Grow") + 1];
 				if plotTypes[pick[3]] ~= PlotTypes.PLOT_OCEAN then
 					plotTypes[pick[3]] = PlotTypes.PLOT_OCEAN;
+					blobSet[pick[3]] = true;
 					nPaint = nPaint + 1;
 					grown = grown + 1;
 				end
@@ -3166,6 +3341,21 @@ function PlaceChaoticFrontRidge(plotTypes, iW, iH, xCenter, density)
 	end
 	local x = xCenter;
 	local y = Map.Rand(iH, "Chaotic Ridge StartY");
+	if IsOasisClimate() then
+		local midY = math.floor((iH - 1) / 2);
+		local jitter = math.floor(iH * 0.10);
+		if jitter < 1 then
+			jitter = 1;
+		end
+		y = midY + Map.Rand(jitter * 2 + 1, "Oasis Ridge StartY") - jitter;
+		local floorT = math.floor(iH * 0.28);
+		if floorT < 8 then
+			floorT = 8;
+		end
+		if target < floorT then
+			target = floorT;
+		end
+	end
 	local placed = 0;
 	local steps = 0;
 	local maxSteps = iH * 10;
@@ -3208,11 +3398,26 @@ function PlaceChaoticFrontRidge(plotTypes, iW, iH, xCenter, density)
 			dy = dy + dy;
 		end
 		y = y + dy;
-		if y < 0 then
-			y = 0;
-		end
-		if y >= iH then
-			y = iH - 1;
+		if IsOasisClimate() then
+			if y < 1 then
+				y = 1 + Map.Rand(2, "Oasis Ridge Bounce");
+			end
+			if y >= iH - 1 then
+				y = iH - 2 - Map.Rand(2, "Oasis Ridge Bounce2");
+			end
+			if y < 0 then
+				y = 0;
+			end
+			if y >= iH then
+				y = iH - 1;
+			end
+		else
+			if y < 0 then
+				y = 0;
+			end
+			if y >= iH then
+				y = iH - 1;
+			end
 		end
 		x = x + (Map.Rand(3, "Chaotic WalkX") - 1);
 		if x < xMin then
@@ -3222,6 +3427,110 @@ function PlaceChaoticFrontRidge(plotTypes, iW, iH, xCenter, density)
 			x = xMax;
 		end
 	end
+end
+------------------------------------------------------------------------------
+function EnsureOasisFrontMountainFloor(plotTypes, iW, iH, xCenter)
+	if plotTypes == nil or IsOasisClimate() == false then
+		return
+	end
+	local xMin = xCenter - 2;
+	local xMax = xCenter + 2;
+	if xMin < 0 then
+		xMin = 0;
+	end
+	local mid = math.floor(iW / 2);
+	if xMax >= mid then
+		xMax = mid - 1;
+	end
+	if xMin > xMax then
+		return
+	end
+	local yMidLo = math.floor(iH * 0.32);
+	local yMidHi = math.floor(iH * 0.68);
+	if yMidLo < 1 then
+		yMidLo = 1;
+	end
+	if yMidHi > iH - 2 then
+		yMidHi = iH - 2;
+	end
+	if yMidLo > yMidHi then
+		yMidLo = 1;
+		yMidHi = iH - 2;
+	end
+	local function canPlace(x, y)
+		if x < xMin or x > xMax or y < 0 or y >= iH then
+			return false
+		end
+		local t = plotTypes[y * iW + x + 1];
+		return t ~= PlotTypes.PLOT_MOUNTAIN and t ~= PlotTypes.PLOT_OCEAN;
+	end
+	local function countBand(xLo, xHi, yLo, yHi)
+		local n = 0;
+		local y = yLo;
+		while y <= yHi do
+			local x = xLo;
+			while x <= xHi do
+				if plotTypes[y * iW + x + 1] == PlotTypes.PLOT_MOUNTAIN then
+					n = n + 1;
+				end
+				x = x + 1;
+			end
+			y = y + 1;
+		end
+		return n
+	end
+	local function fill(xLo, xHi, yLo, yHi, want)
+		local need = want - countBand(xLo, xHi, yLo, yHi);
+		if need < 1 then
+			return
+		end
+		local ys = {};
+		local y = yLo;
+		while y <= yHi do
+			table.insert(ys, y);
+			y = y + 1;
+		end
+		if #ys < 1 then
+			return
+		end
+		if #ys > 1 then
+			ys = GetShuffledCopyOfTable(ys);
+		end
+		local pass = 1;
+		while pass <= 4 and need > 0 do
+			local i = 1;
+			while i <= #ys and need > 0 do
+				local yy = ys[i];
+				local x = xHi;
+				while x >= xLo do
+					if canPlace(x, yy) then
+						if PlaceMirroredMountain(plotTypes, iW, iH, x, yy) then
+							need = need - 1;
+							break
+						end
+					end
+					x = x - 1;
+				end
+				i = i + 1;
+			end
+			pass = pass + 1;
+		end
+	end
+	local minEast = math.floor(iH * 0.18);
+	if minEast < 6 then
+		minEast = 6;
+	end
+	fill(xMax - 1, xMax, 1, iH - 2, minEast);
+	local minMid = math.floor(iH * 0.10);
+	if minMid < 3 then
+		minMid = 3;
+	end
+	fill(xMin, xMax, yMidLo, yMidHi, minMid);
+	local minFront = math.floor(iH * 0.28);
+	if minFront < 8 then
+		minFront = 8;
+	end
+	fill(xMin, xMax, 1, iH - 2, minFront);
 end
 ------------------------------------------------------------------------------
 function PlacePeaksFrontClusters(plotTypes, iW, iH, xCenter, density)
@@ -4256,13 +4565,6 @@ function CapSeaResources()
 	local fishID = GameInfoTypes["RESOURCE_FISH"];
 	local fishPlots = {};
 	local otherPlots = {};
-	local lakeSet = {};
-	local lk = 1;
-	while lk <= #murkTundraLakeTiles do
-		local lp = murkTundraLakeTiles[lk];
-		lakeSet[lp:GetY() * iW + lp:GetX() + 1] = true;
-		lk = lk + 1;
-	end
 	local y = 0;
 	while y < iH do
 		local x = 0;
@@ -4270,7 +4572,7 @@ function CapSeaResources()
 			local plot = Map.GetPlot(x, y);
 			if plot ~= nil and plot:IsWater() then
 				local res = plot:GetResourceType(-1);
-				if IsCappedSeaResource(res) and lakeSet[y * iW + x + 1] ~= true then
+				if IsCappedSeaResource(res) then
 					if res == fishID then
 						table.insert(fishPlots, plot);
 					else
@@ -4631,6 +4933,9 @@ function MultilayeredFractal:GeneratePlotsByRegion()
 		elseif cfg.chaoticMountains then
 			if cfg.kind ~= "tongue" and cfg.kind ~= "snaky" then
 				PlaceChaoticFrontRidge(self.wholeworldPlotTypes, iW, iH, iW / 2 - 4, mountainDensity);
+				if cfg.kind == "desert" then
+					EnsureOasisFrontMountainFloor(self.wholeworldPlotTypes, iW, iH, iW / 2 - 4);
+				end
 			end
 			if IsSnowWrapX() then
 				local x_wrap_west = GetSnowWrapLandMountainXs(iW);
@@ -5255,53 +5560,22 @@ function AddLakes()
 end
 ------------------------------------------------------------------------------
 ------------------------------------------------------------------------------
-function AddDesertJungleBlob()
-	local cfg = GetBarrierConfig();
-	if cfg == nil or cfg.kind ~= "desert" then
-		return
-	end
-	WeeveeDbg("AddDesertJungleBlob");
-	local iW, iH = Map.GetGridSize();
-	local y = 0;
-	while y < iH do
-		local x = 0;
-		while x < iW do
-			local plot = Map.GetPlot(x, y);
-			if plot ~= nil and plot:GetFeatureType() == FeatureTypes.FEATURE_JUNGLE then
-				plot:SetFeatureType(FeatureTypes.NO_FEATURE, -1);
-			end
-			x = x + 1;
-		end
-		y = y + 1;
-	end
-	local skip = {};
-	local cols = GetSnowWrapColumns(iW);
-	local ci = 1;
-	while ci <= #cols do
-		skip[cols[ci]] = true;
-		ci = ci + 1;
-	end
-	cols = GetSnowWrapTundraColumns(iW);
-	ci = 1;
-	while ci <= #cols do
-		skip[cols[ci]] = true;
-		ci = ci + 1;
-	end
-	local ovalW, ovalH, minX, maxX, frontX, cx, cy, rx, ry, yLo, yHi, maxDy, mid = OasisJungleOval(iW, iH);
-	if minX > maxX then
-		return
-	end
+function PaintOasisClassicJungle(iW, iH, skip, minX, maxX, frontX, cx, cy, rx, ry, yLo, yHi, maxDy, mid)
+	local hinter = OasisWestDesertColumns();
 	local placed = {};
-	y = yLo;
+	local y = yLo;
 	while y <= yHi do
 		local yNorm = (y - cy) / maxDy;
 		if yNorm < 0 then
 			yNorm = 0 - yNorm;
 		end
 		local xTaper = 1.0 - 0.55 * yNorm;
-		local x = minX;
+		if xTaper < 0.35 then
+			xTaper = 0.35;
+		end
+		local x = hinter;
 		while x <= frontX do
-			if skip[x] ~= true and x >= OasisWestDesertColumns() then
+			if skip[x] ~= true then
 				local plot = Map.GetPlot(x, y);
 				if plot ~= nil then
 					local plotType = plot:GetPlotType();
@@ -5334,7 +5608,7 @@ function AddDesertJungleBlob()
 	end
 	local pass = 1;
 	while pass <= 2 do
-		local chance = 24 - pass * 8;
+		local chance = 16 - pass * 8;
 		local nPlaced = #placed;
 		local i = 1;
 		while i <= nPlaced do
@@ -5354,7 +5628,7 @@ function AddDesertJungleBlob()
 				if adj ~= nil then
 					local ax = adj:GetX();
 					local ay = adj:GetY();
-					if ax >= minX and ax <= frontX and ay >= yLo and ay <= yHi and skip[ax] ~= true then
+					if ax >= hinter and ax <= frontX and ay >= yLo and ay <= yHi and skip[ax] ~= true then
 						local plotType = adj:GetPlotType();
 						if (plotType == PlotTypes.PLOT_LAND or plotType == PlotTypes.PLOT_HILLS)
 							and adj:GetFeatureType() ~= FeatureTypes.FEATURE_JUNGLE
@@ -5403,15 +5677,19 @@ function AddDesertJungleBlob()
 		end
 		i = i + 1;
 	end
-	local rxFrame = (maxX - minX) * 0.58;
-	local ryFrame = iH * 0.38;
+	local playW = frontX - hinter;
+	if playW < 8 then
+		playW = 8;
+	end
+	local rxFrame = playW * 0.58 * math.sqrt(0.90);
+	local ryFrame = iH * 0.38 * math.sqrt(0.90);
 	if rxFrame < 2 then
 		rxFrame = 2;
 	end
 	if ryFrame < 2 then
 		ryFrame = 2;
 	end
-	local landMinX = 0;
+	local landMinX = hinter;
 	local landMaxX = mid - 1;
 	y = 0;
 	while y < iH do
@@ -5474,14 +5752,14 @@ function AddDesertJungleBlob()
 				if adj ~= nil then
 					local ax = adj:GetX();
 					local plotType = adj:GetPlotType();
-					if skip[ax] ~= true and ax >= minX and ax <= frontX
+					if skip[ax] ~= true and ax >= hinter and ax <= frontX
 						and (plotType == PlotTypes.PLOT_LAND or plotType == PlotTypes.PLOT_HILLS)
 						and adj:GetFeatureType() ~= FeatureTypes.FEATURE_JUNGLE
 						and adj:GetFeatureType() ~= FeatureTypes.FEATURE_FLOOD_PLAINS
 						and adj:GetFeatureType() ~= FeatureTypes.FEATURE_ICE
 						and adj:GetFeatureType() ~= FeatureTypes.FEATURE_OASIS
 						and adj:GetTerrainType() == TerrainTypes.TERRAIN_DESERT then
-						if Map.Rand(100, "Jungle Rim") < 22 then
+						if Map.Rand(100, "Jungle Rim") < 80 then
 							if Map.Rand(100, "Jungle Rim Grass") < 32 then
 								adj:SetTerrainType(TerrainTypes.TERRAIN_GRASS, false, false);
 							else
@@ -5504,14 +5782,14 @@ function AddDesertJungleBlob()
 			if adj ~= nil then
 				local ax = adj:GetX();
 				local plotType = adj:GetPlotType();
-				if skip[ax] ~= true and ax >= minX and ax <= frontX
+				if skip[ax] ~= true and ax >= hinter and ax <= frontX
 					and (plotType == PlotTypes.PLOT_LAND or plotType == PlotTypes.PLOT_HILLS)
 					and adj:GetFeatureType() ~= FeatureTypes.FEATURE_JUNGLE
 					and adj:GetFeatureType() ~= FeatureTypes.FEATURE_FLOOD_PLAINS
 					and adj:GetFeatureType() ~= FeatureTypes.FEATURE_ICE
 					and adj:GetFeatureType() ~= FeatureTypes.FEATURE_OASIS
 					and adj:GetTerrainType() == TerrainTypes.TERRAIN_DESERT then
-					if Map.Rand(100, "Jungle Rim2") < 12 then
+					if Map.Rand(100, "Jungle Rim2") < 42 then
 						if Map.Rand(100, "Jungle Rim2 Grass") < 22 then
 							adj:SetTerrainType(TerrainTypes.TERRAIN_GRASS, false, false);
 						else
@@ -5524,98 +5802,73 @@ function AddDesertJungleBlob()
 		end
 		i = i + 1;
 	end
-	local hinter = OasisWestDesertColumns();
-	local evenN = {{0, 1}, {1, 0}, {0, -1}, {-1, -1}, {-1, 0}, {-1, 1}};
-	local oddN = {{1, 1}, {1, 0}, {1, -1}, {0, -1}, {-1, 0}, {0, 1}};
-	local fingerStarts = {};
-	i = 1;
-	while i <= nPlaced do
-		local px = placed[i][1];
-		local py = placed[i][2];
-		local plot = Map.GetPlot(px, py);
-		if plot ~= nil and plot:GetFeatureType() == FeatureTypes.FEATURE_JUNGLE then
-			local dyAbs = py - cy;
-			if dyAbs < 0 then
-				dyAbs = 0 - dyAbs;
-			end
-			if px >= hinter and skip[px] ~= true then
-				if px >= cx - 1 or dyAbs > ry * 0.38 then
-					table.insert(fingerStarts, {px, py});
-				end
-			end
-		end
-		i = i + 1;
-	end
-	local nFingers = 0;
-	if #fingerStarts > 0 then
-		fingerStarts = GetShuffledCopyOfTable(fingerStarts);
-		local nWant = 4 + Map.Rand(3, "Oasis Plains Fingers");
-		if nWant > #fingerStarts then
-			nWant = #fingerStarts;
-		end
-		local f = 1;
-		while f <= nWant do
-			local fx = fingerStarts[f][1];
-			local fy = fingerStarts[f][2];
-			local len = 2 + Map.Rand(3, "Oasis Plains Finger Len");
-			local step = 1;
-			while step <= len do
-				local dirs = evenN;
-				if fy % 2 ~= 0 then
-					dirs = oddN;
-				end
-				local bestX = nil;
-				local bestY = nil;
-				local bestD = -1;
-				local dIndex = 1;
-				while dIndex <= 6 do
-					local nx = fx + dirs[dIndex][1];
-					local ny = fy + dirs[dIndex][2];
-					if nx >= hinter and nx <= frontX and ny >= 0 and ny < iH and skip[nx] ~= true then
-						if nx >= fx - 1 then
-							local adj = Map.GetPlot(nx, ny);
-							if adj ~= nil and adj:IsWater() == false then
-								local plotType = adj:GetPlotType();
-								local feat = adj:GetFeatureType();
-								if (plotType == PlotTypes.PLOT_LAND or plotType == PlotTypes.PLOT_HILLS)
-									and feat ~= FeatureTypes.FEATURE_JUNGLE
-									and feat ~= FeatureTypes.FEATURE_FLOOD_PLAINS
-									and feat ~= FeatureTypes.FEATURE_ICE
-									and feat ~= FeatureTypes.FEATURE_OASIS
-									and adj:GetTerrainType() == TerrainTypes.TERRAIN_DESERT then
-									local ddx = nx - cx;
-									local ddy = ny - cy;
-									local dist = ddx * ddx + ddy * ddy;
-									if dist > bestD then
-										bestD = dist;
-										bestX = nx;
-										bestY = ny;
-									end
-								end
-							end
+	local nRiverF = 0;
+	y = 0;
+	while y < iH do
+		local x = hinter;
+		while x <= frontX do
+			if skip[x] ~= true then
+				local plot = Map.GetPlot(x, y);
+				if plot ~= nil and plot:IsRiver() and plot:IsWater() == false then
+					local feat = plot:GetFeatureType();
+					local ter = plot:GetTerrainType();
+					if feat ~= FeatureTypes.FEATURE_JUNGLE
+						and feat ~= FeatureTypes.FEATURE_FLOOD_PLAINS
+						and feat ~= FeatureTypes.FEATURE_ICE
+						and feat ~= FeatureTypes.FEATURE_OASIS
+						and (ter == TerrainTypes.TERRAIN_GRASS or ter == TerrainTypes.TERRAIN_PLAINS) then
+						if Map.Rand(100, "Oasis Riv F") < 38 then
+							plot:SetFeatureType(FeatureTypes.FEATURE_FOREST, -1);
+							nRiverF = nRiverF + 1;
 						end
 					end
-					dIndex = dIndex + 1;
 				end
-				if bestX == nil then
-					break
-				end
-				local adj = Map.GetPlot(bestX, bestY);
-				if Map.Rand(100, "Oasis Finger Grass") < 22 then
-					adj:SetTerrainType(TerrainTypes.TERRAIN_GRASS, false, false);
-				else
-					adj:SetTerrainType(TerrainTypes.TERRAIN_PLAINS, false, false);
-				end
-				fx = bestX;
-				fy = bestY;
-				nFingers = nFingers + 1;
-				step = step + 1;
 			end
-			f = f + 1;
+			x = x + 1;
 		end
+		y = y + 1;
 	end
-	print("Oasis jungle plains fingers:", nFingers);
-	print("Desert jungle blob:", #placed);
+	print("Desert jungle blob:", #placed, " river forest", nRiverF);
+end
+------------------------------------------------------------------------------
+function AddDesertJungleBlob()
+	local cfg = GetBarrierConfig();
+	if cfg == nil or cfg.kind ~= "desert" then
+		return
+	end
+	WeeveeDbg("AddDesertJungleBlob");
+	local iW, iH = Map.GetGridSize();
+	local y = 0;
+	while y < iH do
+		local x = 0;
+		while x < iW do
+			local plot = Map.GetPlot(x, y);
+			if plot ~= nil and plot:GetFeatureType() == FeatureTypes.FEATURE_JUNGLE then
+				plot:SetFeatureType(FeatureTypes.NO_FEATURE, -1);
+			end
+			x = x + 1;
+		end
+		y = y + 1;
+	end
+	local skip = {};
+	local cols = GetSnowWrapColumns(iW);
+	local ci = 1;
+	while ci <= #cols do
+		skip[cols[ci]] = true;
+		ci = ci + 1;
+	end
+	cols = GetSnowWrapTundraColumns(iW);
+	ci = 1;
+	while ci <= #cols do
+		skip[cols[ci]] = true;
+		ci = ci + 1;
+	end
+	local ovalW, ovalH, minX, maxX, frontX, cx, cy, rx, ry, yLo, yHi, maxDy, mid = OasisJungleOval(iW, iH);
+	if minX > maxX then
+		return
+	end
+	PaintOasisClassicJungle(iW, iH, skip, minX, maxX, frontX, cx, cy, rx, ry, yLo, yHi, maxDy, mid);
+
 	local fp = 0;
 	y = 0;
 	while y < iH do
@@ -5909,8 +6162,8 @@ function EnsureOasisUniqueLuxuries()
 					if plot:GetPlotType() ~= PlotTypes.PLOT_MOUNTAIN then
 						local feat = plot:GetFeatureType();
 						if feat ~= FeatureTypes.FEATURE_ICE then
-							if res == nil or res == -1 then
-								if nearStart(x, y) == false then
+					if res == nil or res == -1 then
+						if nearStart(x, y) == false and OasisLuxuryWithin(x, y, 1) == false then
 								table.insert(plots, plot);
 								if plot:IsWater() == false
 									and plot:GetPlotType() == PlotTypes.PLOT_HILLS
@@ -5992,7 +6245,7 @@ function EnsureOasisUniqueLuxuries()
 		local p = 1;
 		while p <= #shuf and placed == false do
 			local plot = shuf[p];
-			if plot:GetResourceType(-1) == -1 then
+			if plot:GetResourceType(-1) == -1 and OasisLuxuryWithin(plot:GetX(), plot:GetY(), 1) == false then
 				if plot:CanHaveResource(luxID) then
 					plot:SetResourceType(luxID, 1);
 					placed = true;
@@ -6015,12 +6268,14 @@ function EnsureOasisUniqueLuxuries()
 					local ter = plot:GetTerrainType();
 					local feat = plot:GetFeatureType();
 					if ter == TerrainTypes.TERRAIN_DESERT and feat == FeatureTypes.NO_FEATURE then
-						plot:SetTerrainType(TerrainTypes.TERRAIN_PLAINS, false, false);
-						if plot:CanHaveResource(luxID) then
-							plot:SetResourceType(luxID, 1);
-							placed = true;
-						else
-							plot:SetTerrainType(TerrainTypes.TERRAIN_DESERT, false, false);
+						if OasisNonDesertLandAdj(plot:GetX(), plot:GetY()) >= 2 then
+							plot:SetTerrainType(TerrainTypes.TERRAIN_PLAINS, false, false);
+							if plot:CanHaveResource(luxID) then
+								plot:SetResourceType(luxID, 1);
+								placed = true;
+							else
+								plot:SetTerrainType(TerrainTypes.TERRAIN_DESERT, false, false);
+							end
 						end
 					end
 				end
@@ -6041,7 +6296,7 @@ function EnsureOasisUniqueLuxuries()
 		local hi = 1;
 		while hi <= #hills and extra < extraWant do
 			local plot = hills[hi];
-			if plot:GetResourceType(-1) == -1 then
+			if plot:GetResourceType(-1) == -1 and OasisLuxuryWithin(plot:GetX(), plot:GetY(), 1) == false then
 				local fit = {};
 				mi = 1;
 				while mi <= #miningOrder do
@@ -6281,7 +6536,7 @@ function EnsureLuxuryQuota()
 				if oldType == PlotTypes.PLOT_LAND then
 					plot:SetPlotType(PlotTypes.PLOT_LAND, false, false);
 				end
-				if feat == FeatureTypes.NO_FEATURE then
+				if feat == FeatureTypes.NO_FEATURE and OasisNonDesertLandAdj(plot:GetX(), plot:GetY()) >= 2 then
 					plot:SetTerrainType(TerrainTypes.TERRAIN_PLAINS, false, false);
 					if plot:CanHaveResource(luxID) then
 						plot:SetResourceType(luxID, 1);
@@ -11122,61 +11377,6 @@ function MireBleedFenWood(iW, iH, skip, mirrored)
 		end
 		pass = pass + 1;
 	end
-	pass = 1;
-	while pass <= 2 do
-		local toWood = {};
-		local toSpike = {};
-		local y = 0;
-		while y < iH do
-			local x = 0;
-			while x < iW do
-				if skip[x] ~= true and MirrorOwnsPlot(x, y, mirrored, iW) then
-					local i = y * iW + x + 1;
-					local band = mireBand[i];
-					if band == 1 or band == 2 then
-						local d = 0;
-						while d < DirectionTypes.NUM_DIRECTION_TYPES do
-							local adj = PlotDirNoXWrap(x, y, d);
-							if adj ~= nil and adj:IsWater() == false then
-								local ax = adj:GetX();
-								local ay = adj:GetY();
-								if skip[ax] ~= true and ((not mirrored) or (ax <= iW * 0.5)) then
-									local ai = ay * iW + ax + 1;
-									local ab = mireBand[ai];
-									if band == 2 and ab == 1 and ay >= y then
-										if Map.Rand(100, "Mire Wood North") < 36 then
-											toWood[ai] = adj;
-										end
-									elseif band == 1 and ab == 2 and ay <= y then
-										if Map.Rand(100, "Mire Spike South") < 30 then
-											toSpike[ai] = adj;
-										end
-									end
-								end
-							end
-							d = d + 1;
-						end
-					end
-				end
-				x = x + 1;
-			end
-			y = y + 1;
-		end
-		local i, plot;
-		for i, plot in pairs(toWood) do
-			if toSpike[i] == nil and mireBand[i] == 1 then
-				mireBand[i] = 2;
-				MireApplyBandTerrain(plot, 2);
-			end
-		end
-		for i, plot in pairs(toSpike) do
-			if toWood[i] == nil and mireBand[i] == 2 then
-				mireBand[i] = 1;
-				MireApplyBandTerrain(plot, 1);
-			end
-		end
-		pass = pass + 1;
-	end
 end
 ------------------------------------------------------------------------------
 function AddMireBands()
@@ -11212,14 +11412,14 @@ function AddMireBands()
 					end
 					local jitter = 0;
 					if hHi > hLo then
-						jitter = ((frac:GetHeight(x, y) - hLo) / (hHi - hLo) - 0.5) * 0.32;
+						jitter = ((frac:GetHeight(x, y) - hLo) / (hHi - hLo) - 0.5) * 0.24;
 					end
 					local fenJitter = 0;
 					if fHi > fLo then
 						fenJitter = ((fracFen:GetHeight(x, y) - fLo) / (fHi - fLo) - 0.5) * 0.38;
 					end
 					local band = 1;
-					if yNorm + jitter < 0.72 then
+					if yNorm + jitter < 0.67 then
 						if yNorm + fenJitter < 0.32 then
 							band = 3;
 						else
@@ -11265,7 +11465,7 @@ function AddMireBands()
 			if mireBand[i] == 1 then
 				local plot = Map.GetPlot(x, y);
 				if plot ~= nil and plot:IsWater() == false and plot:GetPlotType() ~= PlotTypes.PLOT_MOUNTAIN then
-					if Map.Rand(100, "Mire Spike Peak") < 6 then
+					if Map.Rand(100, "Mire Spike Peak") < 10 then
 						plot:SetPlotType(PlotTypes.PLOT_MOUNTAIN, false, false);
 					end
 				end
@@ -11282,7 +11482,7 @@ function AddMireBands()
 			if mireBand[i] == 1 then
 				local plot = Map.GetPlot(x, y);
 				if plot ~= nil and plot:IsWater() == false and plot:GetPlotType() ~= PlotTypes.PLOT_MOUNTAIN then
-					if CountMireMountainNeighbors(plot) == 1 and Map.Rand(100, "Mire Spike Pair") < 16 then
+					if CountMireMountainNeighbors(plot) == 1 and Map.Rand(100, "Mire Spike Pair") < 22 then
 						plot:SetPlotType(PlotTypes.PLOT_MOUNTAIN, false, false);
 					end
 				end
@@ -11291,14 +11491,12 @@ function AddMireBands()
 		end
 		y = y + 1;
 	end
-	local _, frontX = GetSnowWrapWaterBounds(iW);
-	if frontX < 4 then
-		frontX = math.floor(iW / 2) - 2;
-	end
-	TrimMireTundraMountainClumps(iW, iH, skip, frontX);
 	local nBlobs = 2;
-	if iH >= 36 then
+	if iH >= 28 then
 		nBlobs = 3;
+	end
+	if iH >= 44 then
+		nBlobs = 4;
 	end
 	local b = 0;
 	while b < nBlobs and #woodLand > 8 do
@@ -11307,7 +11505,7 @@ function AddMireBands()
 		table.insert(q, seed);
 		local qi = 1;
 		local grown = 0;
-		local target = 3 + Map.Rand(2, "Mire Wood Blob Size");
+		local target = 4 + Map.Rand(5, "Mire Wood Blob Size");
 		if seed:IsWater() == false and seed:GetPlotType() ~= PlotTypes.PLOT_MOUNTAIN then
 			seed:SetPlotType(PlotTypes.PLOT_MOUNTAIN, false, false);
 			grown = 1;
@@ -11386,56 +11584,35 @@ function AddMireBands()
 		end
 		snowY = snowY + 1;
 	end
-	local hillChance = {};
-	hillChance[0] = 36;
-	hillChance[1] = 24;
-	hillChance[2] = 14;
-	local xs = {};
-	local hx = 0;
-	while hx < iW do
-		if skip[hx] ~= true then
-			table.insert(xs, hx);
-		end
-		hx = hx + 1;
-	end
-	xs = GetShuffledCopyOfTable(xs);
+	local hillFrac = Fractal.Create(iW, iH, 5, Map.GetFractalFlags(), -1, -1);
+	local hillCut = {};
+	hillCut[0] = hillFrac:GetHeight(82);
+	hillCut[1] = hillFrac:GetHeight(92);
+	hillCut[2] = hillFrac:GetHeight(97);
 	local hillY = 0;
 	while hillY <= 2 and hillY < iH do
-		local chance = hillChance[hillY];
-		local xi = 1;
-		while xi <= #xs do
-			local x = xs[xi];
-			if MirrorOwnsPlot(x, hillY, mirrored, iW) then
+		local cut = hillCut[hillY];
+		local x = 0;
+		while x < iW do
+			if skip[x] ~= true and MirrorOwnsPlot(x, hillY, mirrored, iW) then
 				local plot = Map.GetPlot(x, hillY);
-				if plot ~= nil and plot:IsWater() == false and plot:GetPlotType() == PlotTypes.PLOT_LAND then
-					local hn = 0;
-					local d = 0;
-					while d < DirectionTypes.NUM_DIRECTION_TYPES do
-						local adj = PlotDirNoXWrap(x, hillY, d);
-						if adj ~= nil and adj:GetPlotType() == PlotTypes.PLOT_HILLS then
-							hn = hn + 1;
-						end
-						d = d + 1;
-					end
-					if hn < 2 and Map.Rand(100, "Mire South Hill Seed") < chance then
-						plot:SetPlotType(PlotTypes.PLOT_HILLS, false, false);
-					end
+				if plot ~= nil and plot:IsWater() == false and plot:GetPlotType() == PlotTypes.PLOT_LAND and hillFrac:GetHeight(x, hillY) >= cut then
+					plot:SetPlotType(PlotTypes.PLOT_HILLS, false, false);
 				end
 			end
-			xi = xi + 1;
+			x = x + 1;
 		end
 		hillY = hillY + 1;
 	end
 	hillY = 0;
 	while hillY <= 2 and hillY < iH do
-		local growChance = 26 - hillY * 8;
-		if growChance < 8 then
-			growChance = 8;
+		local growChance = 48 - hillY * 16;
+		if growChance < 10 then
+			growChance = 10;
 		end
-		local xi = 1;
-		while xi <= #xs do
-			local x = xs[xi];
-			if MirrorOwnsPlot(x, hillY, mirrored, iW) then
+		local x = 0;
+		while x < iW do
+			if skip[x] ~= true and MirrorOwnsPlot(x, hillY, mirrored, iW) then
 				local plot = Map.GetPlot(x, hillY);
 				if plot ~= nil and plot:IsWater() == false and plot:GetPlotType() == PlotTypes.PLOT_LAND then
 					local hn = 0;
@@ -11447,12 +11624,12 @@ function AddMireBands()
 						end
 						d = d + 1;
 					end
-					if hn == 1 and Map.Rand(100, "Mire South Hill Grow") < growChance then
+					if hn >= 1 and Map.Rand(100, "Mire South Hill Grow") < growChance then
 						plot:SetPlotType(PlotTypes.PLOT_HILLS, false, false);
 					end
 				end
 			end
-			xi = xi + 1;
+			x = x + 1;
 		end
 		hillY = hillY + 1;
 	end
@@ -11677,74 +11854,7 @@ function AddMireFeatures()
 		fi = fi + 1;
 	end
 	local fenForN, fenForT = PlaceClusteredFeature(forestLeft, FeatureTypes.FEATURE_FOREST, 15, "Mire Fen Forest");
-	murkTundraLakeTiles = {};
-	local tundraLakeCands = {};
-	local ti = 1;
-	while ti <= #spikePlots do
-		local p = spikePlots[ti];
-		if p:IsWater() == false and p:IsCoastalLand() == false and p:GetPlotType() ~= PlotTypes.PLOT_MOUNTAIN and WaterAllowedAtX(p:GetX()) then
-			table.insert(tundraLakeCands, p);
-		end
-		ti = ti + 1;
-	end
-	tundraLakeCands = GetShuffledCopyOfTable(tundraLakeCands);
-	local tundraLakeWant = 1 + Map.Rand(2, "Mire Tundra Lake Count");
-	local tundraLakes = 0;
-	local ci = 1;
-	while tundraLakes < tundraLakeWant and ci <= #tundraLakeCands do
-		local seed = tundraLakeCands[ci];
-		ci = ci + 1;
-		if seed:IsWater() == false and seed:IsCoastalLand() == false and seed:GetPlotType() ~= PlotTypes.PLOT_MOUNTAIN then
-			local nearWater = false;
-			local nd = 0;
-			while nd < DirectionTypes.NUM_DIRECTION_TYPES do
-				local nplot = PlotDirNoXWrap(seed:GetX(), seed:GetY(), nd);
-				if nplot ~= nil and nplot:IsWater() then
-					nearWater = true;
-					break
-				end
-				nd = nd + 1;
-			end
-			if nearWater == false then
-			local blob = {};
-			local want = 1 + Map.Rand(3, "Mire Tundra Lake Size");
-			local q = {seed};
-			local qi = 1;
-			while qi <= #q and #blob < want do
-				local p = q[qi];
-				qi = qi + 1;
-				if p:IsWater() == false and p:GetPlotType() ~= PlotTypes.PLOT_MOUNTAIN then
-					local px = p:GetX();
-					local py = p:GetY();
-					local pi = py * iW + px + 1;
-					if mireBand[pi] == 1 and skip[px] ~= true and WaterAllowedAtX(px) then
-						p:SetPlotType(PlotTypes.PLOT_OCEAN, false, false);
-						p:SetTerrainType(TerrainTypes.TERRAIN_COAST, false, false);
-						p:SetFeatureType(FeatureTypes.NO_FEATURE, -1);
-						table.insert(blob, p);
-						table.insert(murkTundraLakeTiles, p);
-						local d = 0;
-						while d < DirectionTypes.NUM_DIRECTION_TYPES do
-							local adj = PlotDirNoXWrap(px, py, d);
-							if adj ~= nil then
-								local ax = adj:GetX();
-								local ai = adj:GetY() * iW + ax + 1;
-								if mireBand[ai] == 1 and skip[ax] ~= true and WaterAllowedAtX(ax) and adj:IsWater() == false and adj:GetPlotType() ~= PlotTypes.PLOT_MOUNTAIN then
-									table.insert(q, adj);
-								end
-							end
-							d = d + 1;
-						end
-					end
-				end
-			end
-			if #blob > 0 then
-				tundraLakes = tundraLakes + 1;
-			end
-			end
-		end
-	end
-	print("Mire pines:", pineN, "/", pineT, " marsh:", marshN, "/", marshT, " fen forest:", fenForN, "/", fenForT, " lakes:", lakes, " tundra lakes:", tundraLakes);
+	print("Mire pines:", pineN, "/", pineT, " marsh:", marshN, "/", marshT, " fen forest:", fenForN, "/", fenForT, " lakes:", lakes);
 end
 ------------------------------------------------------------------------------
 local wastelandWaterDist = {};
@@ -15442,6 +15552,7 @@ function StartPlotSystem()
 	PeakEnsureStartHills(start_plot_database);
 	WeeveeDbgCall("FrostyAdjustStarts", FrostyAdjustStarts, start_plot_database);
 	ClampAspStartsOffEdges(start_plot_database);
+	OasisSpreadStarts(start_plot_database);
 	WeeveeDbg("BalanceAndAssign");
 	start_plot_database:BalanceAndAssign()
 	WeeveeDbg("BalanceAndAssign done");
@@ -15535,7 +15646,6 @@ function StartPlotSystem()
 	PurgeNearStartLakeFish();
 	WeeveeDbgCall("PlaceFrostySnowFish", PlaceFrostySnowFish);
 	WeeveeDbgCall("CapSeaResources", CapSeaResources);
-	WeeveeDbgCall("PlaceMurkTundraLakeFish", PlaceMurkTundraLakeFish);
 	WeeveeDbgCall("FrostyPadSnowLuxuryYields", FrostyPadSnowLuxuryYields);
 	FixNorthUniqueLuxuries();
 	StripOasisWestSparseLux();
