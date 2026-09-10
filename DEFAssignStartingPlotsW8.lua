@@ -9070,6 +9070,10 @@ function AssignStartingPlots:PlaceLuxuries()
 		-- First pass, checking only first two rings with a 50% ratio.
 		shuf_list = GetShuffledCopyOfTable(luxury_plot_lists[primary])
 		local iNumLeftToPlace = self:PlaceSpecificNumberOfResources(this_region_luxury, 1, iNumToPlace, 0.5, 2, 2, 0, shuf_list);
+		if iNumLeftToPlace > 0 then
+			shuf_list = GetShuffledCopyOfTable(luxury_plot_lists[primary])
+			iNumLeftToPlace = self:PlaceSpecificNumberOfResources(this_region_luxury, 1, iNumLeftToPlace, 1, -1, 0, 0, shuf_list);
+		end
 		if iNumLeftToPlace > 0 and secondary > 0 then
 			shuf_list = GetShuffledCopyOfTable(luxury_plot_lists[secondary])
 			iNumLeftToPlace = self:PlaceSpecificNumberOfResources(this_region_luxury, 1, iNumLeftToPlace, 0.5, -1, 0, 0, shuf_list);
@@ -9088,6 +9092,10 @@ function AssignStartingPlots:PlaceLuxuries()
 			luxury_plot_lists = self:GenerateLuxuryPlotListsAtCitySite(x, y, 3, false)
 			shuf_list = GetShuffledCopyOfTable(luxury_plot_lists[primary])
 			iNumLeftToPlace = self:PlaceSpecificNumberOfResources(this_region_luxury, 1, iNumLeftToPlace, 1, 2, 2, 0, shuf_list);
+			if iNumLeftToPlace > 0 then
+				shuf_list = GetShuffledCopyOfTable(luxury_plot_lists[primary])
+				iNumLeftToPlace = self:PlaceSpecificNumberOfResources(this_region_luxury, 1, iNumLeftToPlace, 1, -1, 0, 0, shuf_list);
+			end
 			if iNumLeftToPlace > 0 and secondary > 0 then
 				shuf_list = GetShuffledCopyOfTable(luxury_plot_lists[secondary])
 				iNumLeftToPlace = self:PlaceSpecificNumberOfResources(this_region_luxury, 1, iNumLeftToPlace, 1, 2, 2, 0, shuf_list);

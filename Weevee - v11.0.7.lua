@@ -2102,7 +2102,7 @@ function MaybePlaceStartTileResource(asp)
 							local plot = Map.GetPlot(x, y);
 							if plot ~= nil then
 								local resID = plot:GetResourceType(-1);
-								if resID ~= -1 then
+								if resID ~= -1 and IsWeeveeLuxuryID(resID) == false then
 									local usage = Game.GetResourceUsageType(resID);
 									if usage == ResourceUsageTypes.RESOURCEUSAGE_BONUS then
 										if startPlot:CanHaveResource(resID) then
@@ -2462,6 +2462,18 @@ end
 -- regionals on the capital after PlaceImpactAndRipples already stamped r=3.
 local PlaceSpecificNumberOfResourcesVanilla = AssignStartingPlots.PlaceSpecificNumberOfResources;
 function AssignStartingPlots:PlaceSpecificNumberOfResources(resource_ID, quantity, amount, ratio, impact_table_number, min_radius, max_radius, plot_list)
+	if IsWeeveeLuxuryID(resource_ID) and plot_list ~= nil then
+		local starts = WeeveeMajorStartIndexSet();
+		local filtered = {};
+		local i = 1;
+		while plot_list[i] ~= nil do
+			if starts[plot_list[i]] ~= true then
+				table.insert(filtered, plot_list[i]);
+			end
+			i = i + 1;
+		end
+		plot_list = filtered;
+	end
 	if IsOasisClimate() and IsWeeveeLuxuryID(resource_ID) then
 		if impact_table_number == 2 then
 			local maxR = max_radius;
@@ -2766,6 +2778,22 @@ function OasisJungleOval(iW, iH)
 		yHi = iH - 1;
 	end
 	return iW, iH, minX, maxX, frontX, cx, cy, rx, ry, yLo, yHi, maxDy, mid;
+end
+------------------------------------------------------------------------------
+function OasisFrontMostColumns(iW, iH)
+	local cols = {};
+	if IsOasisClimate() == false then
+		return cols
+	end
+	local _, _, _, _, frontX = OasisJungleOval(iW, iH);
+	local x = frontX - 2;
+	while x <= frontX do
+		if x >= 0 and x < iW then
+			table.insert(cols, x);
+		end
+		x = x + 1;
+	end
+	return cols
 end
 ------------------------------------------------------------------------------
 function PlaceOasisCrescentSeas(plotTypes, iW, iH)
@@ -3533,6 +3561,120 @@ function EnsureOasisFrontMountainFloor(plotTypes, iW, iH, xCenter)
 	fill(xMin, xMax, 1, iH - 2, minFront);
 end
 ------------------------------------------------------------------------------
+function SlashOasisFrontMountainBlobs(plotTypes, iW, iH, xCenter)
+	if plotTypes == nil or IsOasisClimate() == false then
+		return
+	end
+	local xMin = xCenter - 2;
+	local xMax = xCenter + 2;
+	if xMin < 0 then
+		xMin = 0;
+	end
+	local mid = math.floor(iW / 2);
+	if xMax >= mid then
+		xMax = mid - 1;
+	end
+	if xMin > xMax then
+		return
+	end
+	local evenN = {{0, 1}, {1, 0}, {0, -1}, {-1, -1}, {-1, 0}, {-1, 1}};
+	local oddN = {{1, 1}, {1, 0}, {1, -1}, {0, -1}, {-1, 0}, {0, 1}};
+	local function hexDirs(y)
+		if y % 2 ~= 0 then
+			return oddN
+		end
+		return evenN
+	end
+	local function inBand(x, y)
+		return x >= xMin and x <= xMax and y >= 0 and y < iH
+	end
+	local function toHill(x, y)
+		local idx = y * iW + x + 1;
+		if plotTypes[idx] ~= PlotTypes.PLOT_MOUNTAIN then
+			return false
+		end
+		plotTypes[idx] = PlotTypes.PLOT_HILLS;
+		local mx = iW - x - 1;
+		local my = iH - y - 1;
+		plotTypes[my * iW + mx + 1] = PlotTypes.PLOT_HILLS;
+		return true
+	end
+	local nCut = 0;
+	local pass = 1;
+	while pass <= 2 do
+		local visited = {};
+		local y = 0;
+		while y < iH do
+			local x = xMin;
+			while x <= xMax do
+				local key = y * iW + x;
+				if visited[key] ~= true and plotTypes[y * iW + x + 1] == PlotTypes.PLOT_MOUNTAIN then
+					local blob = {};
+					local q = {{x, y}};
+					visited[key] = true;
+					local qi = 1;
+					while qi <= #q do
+						local px = q[qi][1];
+						local py = q[qi][2];
+						table.insert(blob, {px, py});
+						local dirs = hexDirs(py);
+						local d = 1;
+						while d <= 6 do
+							local nx = px + dirs[d][1];
+							local ny = py + dirs[d][2];
+							if inBand(nx, ny) then
+								local nk = ny * iW + nx;
+								if visited[nk] ~= true and plotTypes[ny * iW + nx + 1] == PlotTypes.PLOT_MOUNTAIN then
+									visited[nk] = true;
+									table.insert(q, {nx, ny});
+								end
+							end
+							d = d + 1;
+						end
+						qi = qi + 1;
+					end
+					if #blob >= 7 then
+						local sx = 0;
+						local sy = 0;
+						local bi = 1;
+						while bi <= #blob do
+							sx = sx + blob[bi][1];
+							sy = sy + blob[bi][2];
+							bi = bi + 1;
+						end
+						local cx = sx / #blob;
+						local cy = sy / #blob;
+						local scored = {};
+						bi = 1;
+						while bi <= #blob do
+							local dx = blob[bi][1] - cx;
+							local dy = blob[bi][2] - cy;
+							table.insert(scored, {blob[bi][1], blob[bi][2], dx * dx + dy * dy});
+							bi = bi + 1;
+						end
+						table.sort(scored, function(a, b)
+							return a[3] < b[3]
+						end);
+						local want = 2 + Map.Rand(2, "Oasis Mtn Slash");
+						local k = 1;
+						while k <= #scored and want > 0 do
+							if toHill(scored[k][1], scored[k][2]) then
+								want = want - 1;
+								nCut = nCut + 1;
+							end
+							k = k + 1;
+						end
+					end
+				end
+				x = x + 1;
+			end
+			y = y + 1;
+		end
+		pass = pass + 1;
+	end
+	print("Oasis front mountain slash tiles:", nCut);
+end
+------------------------------------------------------------------------------
 function PlacePeaksFrontClusters(plotTypes, iW, iH, xCenter, density)
 	local xMin = xCenter - 1;
 	local xMax = xCenter + 1;
@@ -4207,12 +4349,50 @@ function AssignStartingPlots:AttemptToPlaceNaturalWonder(wonder_number, row_numb
 	end
 	self.eligibility_lists[wonder_number] = kept;
 	local ok = false;
+	local sriBefore = nil;
 	if #kept > 0 then
-		ok = ASP_AttemptToPlaceNaturalWonder(self, wonder_number, row_number);
+		if TypeIsSriPada(self.wonder_list[wonder_number]) then
+			sriBefore = CollectSriPadaKeys();
+			local buckets = {};
+			local s = 0;
+			while s <= 6 do
+				buckets[s + 1] = {};
+				s = s + 1;
+			end
+			local ki = 1;
+			while kept[ki] ~= nil do
+				local plotIndex = kept[ki];
+				local px = (plotIndex - 1) % iW;
+				local py = (plotIndex - px - 1) / iW;
+				local score = SriPadaAdjPreferScore(px, py);
+				if score < 0 then
+					score = 0;
+				end
+				if score > 6 then
+					score = 6;
+				end
+				table.insert(buckets[score + 1], plotIndex);
+				ki = ki + 1;
+			end
+			s = 6;
+			while s >= 0 and ok == false do
+				local group = buckets[s + 1];
+				if group ~= nil and #group > 0 then
+					self.eligibility_lists[wonder_number] = group;
+					ok = ASP_AttemptToPlaceNaturalWonder(self, wonder_number, row_number);
+				end
+				s = s - 1;
+			end
+		else
+			ok = ASP_AttemptToPlaceNaturalWonder(self, wonder_number, row_number);
+		end
 	end
 	self.eligibility_lists[wonder_number] = orig;
 	if ok then
 		FixKailashGibraltarAdjacency(self.wonder_list[wonder_number]);
+		if sriBefore ~= nil then
+			ShapeNewSriPada(sriBefore);
+		end
 	end
 	return ok;
 end
@@ -4292,6 +4472,325 @@ function StripSeparatorNaturalWonders()
 		y = y + 1;
 	end
 	print("Separator natural wonders stripped:", n);
+end
+------------------------------------------------------------------------------
+function FeatureIsMtFuji(feat)
+	if feat == nil or feat == FeatureTypes.NO_FEATURE then
+		return false
+	end
+	local fujiID = GameInfoTypes["FEATURE_FUJI"];
+	if fujiID ~= nil and feat == fujiID then
+		return true
+	end
+	fujiID = GameInfoTypes["FEATURE_MT_FUJI"];
+	if fujiID ~= nil and feat == fujiID then
+		return true
+	end
+	local info = GameInfo.Features[feat];
+	if info ~= nil and info.Type ~= nil then
+		local t = string.upper(tostring(info.Type));
+		if string.find(t, "FUJI", 1, true) ~= nil then
+			return true
+		end
+	end
+	return false
+end
+------------------------------------------------------------------------------
+function MaybePlaceFujiHorses(asp)
+	local horseID = GameInfoTypes["RESOURCE_HORSE"];
+	if horseID == nil then
+		return
+	end
+	local horseAmt = 4;
+	if asp ~= nil and asp.GetMajorStrategicResourceQuantityValues ~= nil then
+		local uIgnored, h = asp:GetMajorStrategicResourceQuantityValues();
+		if h ~= nil and h > 0 then
+			horseAmt = h;
+		end
+	end
+	local iW, iH = Map.GetGridSize();
+	local n = 0;
+	local y = 0;
+	while y < iH do
+		local x = 0;
+		while x < iW do
+			local plot = Map.GetPlot(x, y);
+			if plot ~= nil and FeatureIsMtFuji(plot:GetFeatureType()) then
+				if Map.Rand(100, "Fuji horses") < 2 then
+					plot:SetResourceType(horseID, horseAmt);
+					n = n + 1;
+					if asp ~= nil and asp.amounts_of_resources_placed ~= nil then
+						local slot = asp.amounts_of_resources_placed[horseID + 1];
+						if slot == nil then
+							slot = 0;
+						end
+						asp.amounts_of_resources_placed[horseID + 1] = slot + horseAmt;
+					end
+					print("Mt Fuji horse major at", x, y, "amt", horseAmt);
+				end
+			end
+			x = x + 1;
+		end
+		y = y + 1;
+	end
+	if n > 0 then
+		print("Fuji horse nodes:", n);
+	end
+end
+------------------------------------------------------------------------------
+function TypeIsSriPada(wtype)
+	if wtype == nil then
+		return false
+	end
+	local t = string.upper(tostring(wtype));
+	if string.find(t, "SRI", 1, true) ~= nil and string.find(t, "PADA", 1, true) ~= nil then
+		return true
+	end
+	return false
+end
+------------------------------------------------------------------------------
+function FeatureIsSriPada(feat)
+	if feat == nil or feat == FeatureTypes.NO_FEATURE then
+		return false
+	end
+	local info = GameInfo.Features[feat];
+	if info ~= nil and info.Type ~= nil then
+		return TypeIsSriPada(info.Type);
+	end
+	return false
+end
+------------------------------------------------------------------------------
+function SriPadaAdjPreferScore(x, y)
+	local n = 0;
+	local d = 0;
+	while d < DirectionTypes.NUM_DIRECTION_TYPES do
+		local adj = PlotDirNoXWrap(x, y, d);
+		if adj ~= nil then
+			if adj:IsWater() or adj:GetPlotType() == PlotTypes.PLOT_LAND then
+				n = n + 1;
+			end
+		end
+		d = d + 1;
+	end
+	return n
+end
+------------------------------------------------------------------------------
+function PlotHasNaturalWonder(plot)
+	if plot == nil then
+		return true
+	end
+	local f = plot:GetFeatureType();
+	if f == nil or f == FeatureTypes.NO_FEATURE then
+		return false
+	end
+	local info = GameInfo.Features[f];
+	if info ~= nil and info.NaturalWonder then
+		return true
+	end
+	return false
+end
+------------------------------------------------------------------------------
+function PlotIsMajorStart(plot)
+	if plot == nil then
+		return false
+	end
+	local pi = 0;
+	while pi < GameDefines.MAX_MAJOR_CIVS do
+		local player = Players[pi];
+		if player ~= nil and player:IsAlive() then
+			local sp = player:GetStartingPlot();
+			if sp ~= nil and sp:GetX() == plot:GetX() and sp:GetY() == plot:GetY() then
+				return true
+			end
+		end
+		pi = pi + 1;
+	end
+	return false
+end
+------------------------------------------------------------------------------
+function WeeveeMajorStartIndexSet()
+	local keys = {};
+	local iW = Map.GetGridSize();
+	local pi = 0;
+	while pi < GameDefines.MAX_MAJOR_CIVS do
+		local player = Players[pi];
+		if player ~= nil and player:IsAlive() then
+			local sp = player:GetStartingPlot();
+			if sp ~= nil then
+				keys[sp:GetY() * iW + sp:GetX() + 1] = true;
+			end
+		end
+		pi = pi + 1;
+	end
+	return keys
+end
+------------------------------------------------------------------------------
+function PlotCanBecomeHills(plot)
+	if plot == nil or plot:IsWater() then
+		return false
+	end
+	if plot:GetPlotType() ~= PlotTypes.PLOT_LAND then
+		return false
+	end
+	if PlotHasNaturalWonder(plot) then
+		return false
+	end
+	local feat = plot:GetFeatureType();
+	if feat == FeatureTypes.FEATURE_OASIS
+		or feat == FeatureTypes.FEATURE_FLOOD_PLAINS
+		or feat == FeatureTypes.FEATURE_MARSH
+		or feat == FeatureTypes.FEATURE_ICE then
+		return false
+	end
+	return true
+end
+------------------------------------------------------------------------------
+function TryConvertPlotToHills(plot)
+	if PlotCanBecomeHills(plot) == false then
+		return false
+	end
+	local res = plot:GetResourceType(-1);
+	plot:SetPlotType(PlotTypes.PLOT_HILLS, false, false);
+	if res ~= nil and res ~= -1 and plot:CanHaveResource(res) == false then
+		plot:SetPlotType(PlotTypes.PLOT_LAND, false, false);
+		return false
+	end
+	return true
+end
+------------------------------------------------------------------------------
+function CollectSriPadaKeys()
+	local keys = {};
+	local iW, iH = Map.GetGridSize();
+	local y = 0;
+	while y < iH do
+		local x = 0;
+		while x < iW do
+			local plot = Map.GetPlot(x, y);
+			if plot ~= nil and FeatureIsSriPada(plot:GetFeatureType()) then
+				keys[y * iW + x + 1] = true;
+			end
+			x = x + 1;
+		end
+		y = y + 1;
+	end
+	return keys
+end
+------------------------------------------------------------------------------
+function ShapeSriPadaAt(x, y)
+	local d = 0;
+	while d < DirectionTypes.NUM_DIRECTION_TYPES do
+		local adj = PlotDirNoXWrap(x, y, d);
+		if adj ~= nil and adj:GetPlotType() == PlotTypes.PLOT_HILLS and PlotHasNaturalWonder(adj) == false then
+			local toWater = false;
+			if PlotIsMajorStart(adj) == false and Map.Rand(2, "Sri Pada adj water") == 0 then
+				toWater = true;
+			end
+			if toWater then
+				adj:SetFeatureType(FeatureTypes.NO_FEATURE, -1);
+				adj:SetResourceType(-1);
+				adj:SetPlotType(PlotTypes.PLOT_OCEAN, false, false);
+				adj:SetTerrainType(TerrainTypes.TERRAIN_COAST, false, false);
+			else
+				adj:SetPlotType(PlotTypes.PLOT_LAND, false, false);
+			end
+		end
+		d = d + 1;
+	end
+	local cands = {};
+	local dy = y - 2;
+	while dy <= y + 2 do
+		local dx = x - 2;
+		while dx <= x + 2 do
+			if Map.PlotDistance(x, y, dx, dy) >= 1 and Map.PlotDistance(x, y, dx, dy) <= 2 then
+				local p = Map.GetPlot(dx, dy);
+				if PlotCanBecomeHills(p) then
+					table.insert(cands, p);
+				end
+			end
+			dx = dx + 1;
+		end
+		dy = dy + 1;
+	end
+	if #cands > 1 then
+		cands = GetShuffledCopyOfTable(cands);
+	end
+	local n = 0;
+	local i = 1;
+	while i <= #cands and n < 3 do
+		if TryConvertPlotToHills(cands[i]) then
+			n = n + 1;
+		end
+		i = i + 1;
+	end
+	print("Sri Pada shaped at", x, y, "r2 hills", n);
+end
+------------------------------------------------------------------------------
+function ShapeNewSriPada(beforeKeys)
+	local iW, iH = Map.GetGridSize();
+	local y = 0;
+	while y < iH do
+		local x = 0;
+		while x < iW do
+			local key = y * iW + x + 1;
+			if beforeKeys == nil or beforeKeys[key] ~= true then
+				local plot = Map.GetPlot(x, y);
+				if plot ~= nil and FeatureIsSriPada(plot:GetFeatureType()) then
+					ShapeSriPadaAt(x, y);
+				end
+			end
+			x = x + 1;
+		end
+		y = y + 1;
+	end
+end
+------------------------------------------------------------------------------
+function EnsureStartHillsFloor()
+	local iW, iH = Map.GetGridSize();
+	local pi = 0;
+	while pi < GameDefines.MAX_MAJOR_CIVS do
+		local player = Players[pi];
+		if player ~= nil and player:IsAlive() and player:GetStartingPlot() ~= nil then
+			local sp = player:GetStartingPlot();
+			local sx = sp:GetX();
+			local sy = sp:GetY();
+			if not (DEF_MIRRORED == 1 and sx >= iW / 2) then
+				local nHills = 0;
+				local flats = {};
+				local dy = sy - 3;
+				while dy <= sy + 3 do
+					local dx = sx - 3;
+					while dx <= sx + 3 do
+						if Map.PlotDistance(sx, sy, dx, dy) <= 3 then
+							local p = Map.GetPlot(dx, dy);
+							if p ~= nil then
+								if p:GetPlotType() == PlotTypes.PLOT_HILLS then
+									nHills = nHills + 1;
+								elseif PlotCanBecomeHills(p) then
+									table.insert(flats, p);
+								end
+							end
+						end
+						dx = dx + 1;
+					end
+					dy = dy + 1;
+				end
+				if nHills < 5 and #flats > 0 then
+					if #flats > 1 then
+						flats = GetShuffledCopyOfTable(flats);
+					end
+					local i = 1;
+					while i <= #flats and nHills < 5 do
+						if TryConvertPlotToHills(flats[i]) then
+							nHills = nHills + 1;
+						end
+						i = i + 1;
+					end
+					print("Start hills floor", sx, sy, "now", nHills);
+				end
+			end
+		end
+		pi = pi + 1;
+	end
 end
 ------------------------------------------------------------------------------
 function PurgeNearStartLakeFish()
@@ -4935,6 +5434,7 @@ function MultilayeredFractal:GeneratePlotsByRegion()
 				PlaceChaoticFrontRidge(self.wholeworldPlotTypes, iW, iH, iW / 2 - 4, mountainDensity);
 				if cfg.kind == "desert" then
 					EnsureOasisFrontMountainFloor(self.wholeworldPlotTypes, iW, iH, iW / 2 - 4);
+					SlashOasisFrontMountainBlobs(self.wholeworldPlotTypes, iW, iH, iW / 2 - 4);
 				end
 			end
 			if IsSnowWrapX() then
@@ -5760,7 +6260,7 @@ function PaintOasisClassicJungle(iW, iH, skip, minX, maxX, frontX, cx, cy, rx, r
 						and adj:GetFeatureType() ~= FeatureTypes.FEATURE_OASIS
 						and adj:GetTerrainType() == TerrainTypes.TERRAIN_DESERT then
 						if Map.Rand(100, "Jungle Rim") < 80 then
-							if Map.Rand(100, "Jungle Rim Grass") < 32 then
+							if adj:IsRiver() and Map.Rand(100, "Jungle Rim Grass") < 32 then
 								adj:SetTerrainType(TerrainTypes.TERRAIN_GRASS, false, false);
 							else
 								adj:SetTerrainType(TerrainTypes.TERRAIN_PLAINS, false, false);
@@ -5790,7 +6290,7 @@ function PaintOasisClassicJungle(iW, iH, skip, minX, maxX, frontX, cx, cy, rx, r
 					and adj:GetFeatureType() ~= FeatureTypes.FEATURE_OASIS
 					and adj:GetTerrainType() == TerrainTypes.TERRAIN_DESERT then
 					if Map.Rand(100, "Jungle Rim2") < 42 then
-						if Map.Rand(100, "Jungle Rim2 Grass") < 22 then
+						if adj:IsRiver() and Map.Rand(100, "Jungle Rim2 Grass") < 22 then
 							adj:SetTerrainType(TerrainTypes.TERRAIN_GRASS, false, false);
 						else
 							adj:SetTerrainType(TerrainTypes.TERRAIN_PLAINS, false, false);
@@ -5829,6 +6329,78 @@ function PaintOasisClassicJungle(iW, iH, skip, minX, maxX, frontX, cx, cy, rx, r
 		y = y + 1;
 	end
 	print("Desert jungle blob:", #placed, " river forest", nRiverF);
+end
+------------------------------------------------------------------------------
+function OasisGrassHasWater(plot)
+	if plot == nil then
+		return false
+	end
+	if plot:IsRiver() or plot:IsFreshWater() or plot:IsWater() then
+		return true
+	end
+	local d = 0;
+	while d < DirectionTypes.NUM_DIRECTION_TYPES do
+		local adj = PlotDirNoXWrap(plot:GetX(), plot:GetY(), d);
+		if adj ~= nil and adj:IsWater() then
+			return true
+		end
+		d = d + 1;
+	end
+	return false
+end
+------------------------------------------------------------------------------
+function SoftenOasisGrassDesertEdge()
+	if IsOasisClimate() == false then
+		return
+	end
+	local iW, iH = Map.GetGridSize();
+	local skip = FillMireSkip(iW);
+	local n = 0;
+	local pass = 1;
+	while pass <= 2 do
+		local hit = {};
+		local y = 0;
+		while y < iH do
+			local x = 0;
+			while x < iW do
+				if skip[x] ~= true then
+					local plot = Map.GetPlot(x, y);
+					if plot ~= nil
+						and plot:IsWater() == false
+						and plot:GetPlotType() ~= PlotTypes.PLOT_MOUNTAIN
+						and plot:GetTerrainType() == TerrainTypes.TERRAIN_GRASS
+						and plot:GetFeatureType() ~= FeatureTypes.FEATURE_JUNGLE
+						and OasisGrassHasWater(plot) == false then
+						local d = 0;
+						local nearDesert = false;
+						while d < DirectionTypes.NUM_DIRECTION_TYPES do
+							local adj = PlotDirNoXWrap(x, y, d);
+							if adj ~= nil and adj:GetTerrainType() == TerrainTypes.TERRAIN_DESERT then
+								nearDesert = true;
+								break
+							end
+							d = d + 1;
+						end
+						if nearDesert then
+							table.insert(hit, plot);
+						end
+					end
+				end
+				x = x + 1;
+			end
+			y = y + 1;
+		end
+		local i = 1;
+		while i <= #hit do
+			if Map.Rand(100, "Oasis Grass Desert") < 82 then
+				hit[i]:SetTerrainType(TerrainTypes.TERRAIN_PLAINS, false, false);
+				n = n + 1;
+			end
+			i = i + 1;
+		end
+		pass = pass + 1;
+	end
+	print("Oasis grass-desert to plains:", n);
 end
 ------------------------------------------------------------------------------
 function AddDesertJungleBlob()
@@ -5888,6 +6460,7 @@ function AddDesertJungleBlob()
 	print("Desert late floodplains:", fp);
 	PaintOasisWestDesertBand();
 	AddOasisDesertHills();
+	SoftenOasisGrassDesertEdge();
 	WeeveeDbg("AddDesertJungleBlob done");
 end
 ------------------------------------------------------------------------------
@@ -6605,6 +7178,193 @@ function EnsureLuxuryQuota()
 	local ok, u, d, t = LuxuryQuotaMet();
 	print("Luxury quota pad:", u, "unique", d, "dup", t, "trip", "ok", tostring(ok));
 	return ok
+end
+------------------------------------------------------------------------------
+function EnsureStartLuxuryFloor()
+	local want = 3;
+	local maxD = 3;
+	local banned = {};
+	banned[GameInfoTypes["RESOURCE_JEWELRY"] or -2] = true;
+	banned[GameInfoTypes["RESOURCE_PORCELAIN"] or -2] = true;
+	local mining = {};
+	mining[GameInfoTypes["RESOURCE_GOLD"] or -2] = true;
+	mining[GameInfoTypes["RESOURCE_SILVER"] or -2] = true;
+	mining[GameInfoTypes["RESOURCE_GEMS"] or -2] = true;
+	mining[GameInfoTypes["RESOURCE_COPPER"] or -2] = true;
+	mining[GameInfoTypes["RESOURCE_SALT"] or -2] = true;
+	local iW, iH = Map.GetGridSize();
+	local function tryPut(plot, luxID)
+		if plot == nil or luxID == nil or banned[luxID] == true then
+			return false
+		end
+		if plot:GetResourceType(-1) ~= -1 then
+			return false
+		end
+		if plot:CanHaveResource(luxID) then
+			plot:SetResourceType(luxID, 1);
+			return true
+		end
+		if mining[luxID] == true and plot:IsWater() == false and plot:GetPlotType() ~= PlotTypes.PLOT_MOUNTAIN then
+			local feat = plot:GetFeatureType();
+			if feat ~= FeatureTypes.FEATURE_FLOOD_PLAINS and feat ~= FeatureTypes.FEATURE_OASIS and feat ~= FeatureTypes.FEATURE_JUNGLE and feat ~= FeatureTypes.FEATURE_ICE then
+				local oldType = plot:GetPlotType();
+				if oldType == PlotTypes.PLOT_LAND then
+					plot:SetPlotType(PlotTypes.PLOT_HILLS, false, false);
+				end
+				if plot:CanHaveResource(luxID) then
+					plot:SetResourceType(luxID, 1);
+					return true
+				end
+				if oldType == PlotTypes.PLOT_LAND then
+					plot:SetPlotType(PlotTypes.PLOT_LAND, false, false);
+				end
+			end
+		end
+		return false
+	end
+	local nPad = 0;
+	local pi = 0;
+	while pi < GameDefines.MAX_MAJOR_CIVS do
+		local player = Players[pi];
+		if player ~= nil and player:IsAlive() then
+			local sp = player:GetStartingPlot();
+			if sp ~= nil then
+				local sx = sp:GetX();
+				local sy = sp:GetY();
+				local have = {};
+				local nHave = 0;
+				local cands = {};
+				local y = sy - maxD;
+				while y <= sy + maxD do
+					local x = sx - maxD;
+					while x <= sx + maxD do
+						local d = Map.PlotDistance(sx, sy, x, y);
+						if d >= 1 and d <= maxD then
+							local plot = Map.GetPlot(x, y);
+							if plot ~= nil and plot:IsWater() == false and plot:GetPlotType() ~= PlotTypes.PLOT_MOUNTAIN then
+								local res = plot:GetResourceType(-1);
+								if IsWeeveeLuxuryID(res) then
+									if have[res] == nil then
+										have[res] = 0;
+									end
+									have[res] = have[res] + 1;
+									nHave = nHave + 1;
+								elseif res == nil or res == -1 then
+									local feat = plot:GetFeatureType();
+									if feat ~= FeatureTypes.FEATURE_ICE then
+										table.insert(cands, plot);
+									end
+								end
+							end
+						end
+						x = x + 1;
+					end
+					y = y + 1;
+				end
+				if nHave < want and #cands > 0 then
+					if #cands > 1 then
+						cands = GetShuffledCopyOfTable(cands);
+					end
+					local idsNew = {};
+					local idsHave = {};
+					local idsAny = {};
+					for res in GameInfo.Resources() do
+						if IsWeeveeLuxuryID(res.ID) and banned[res.ID] ~= true then
+							table.insert(idsAny, res.ID);
+							if have[res.ID] == nil then
+								table.insert(idsNew, res.ID);
+							else
+								table.insert(idsHave, res.ID);
+							end
+						end
+					end
+					local bags = {idsNew, idsHave, idsAny};
+					local b = 1;
+					while nHave < want and b <= #bags do
+						local ids = bags[b];
+						if #ids > 1 then
+							ids = GetShuffledCopyOfTable(ids);
+						end
+						local ii = 1;
+						while nHave < want and ii <= #ids do
+							local luxID = ids[ii];
+							local ci = 1;
+							while nHave < want and ci <= #cands do
+								if tryPut(cands[ci], luxID) then
+									nHave = nHave + 1;
+									nPad = nPad + 1;
+									if have[luxID] == nil then
+										have[luxID] = 0;
+									end
+									have[luxID] = have[luxID] + 1;
+								end
+								ci = ci + 1;
+							end
+							ii = ii + 1;
+						end
+						b = b + 1;
+					end
+				end
+				print("Start lux floor civ", pi, "have", nHave, "want", want);
+			end
+		end
+		pi = pi + 1;
+	end
+	print("Start luxury floor added:", nPad);
+end
+------------------------------------------------------------------------------
+function StripStartTileLuxuries()
+	local n = 0;
+	local pi = 0;
+	while pi < GameDefines.MAX_MAJOR_CIVS do
+		local player = Players[pi];
+		if player ~= nil and player:IsAlive() and player:GetStartingPlot() ~= nil then
+			local sp = player:GetStartingPlot();
+			local sx = sp:GetX();
+			local sy = sp:GetY();
+			local iW, iH = Map.GetGridSize();
+			if not (DEF_MIRRORED == 1 and sx >= iW / 2) then
+				local res = sp:GetResourceType(-1);
+				if IsWeeveeLuxuryID(res) then
+					local amt = sp:GetNumResource();
+					if amt == nil or amt < 1 then
+						amt = 1;
+					end
+					local cands = {};
+					local y = sy - 3;
+					while y <= sy + 3 do
+						local x = sx - 3;
+						while x <= sx + 3 do
+							local d = Map.PlotDistance(sx, sy, x, y);
+							if d >= 1 and d <= 3 then
+								local plot = Map.GetPlot(x, y);
+								if plot ~= nil
+									and PlotIsMajorStart(plot) == false
+									and plot:IsWater() == false
+									and plot:GetPlotType() ~= PlotTypes.PLOT_MOUNTAIN
+									and plot:GetResourceType(-1) == -1
+									and plot:CanHaveResource(res) then
+									table.insert(cands, plot);
+								end
+							end
+							x = x + 1;
+						end
+						y = y + 1;
+					end
+					if #cands > 1 then
+						cands = GetShuffledCopyOfTable(cands);
+					end
+					if #cands > 0 then
+						cands[1]:SetResourceType(res, amt);
+					end
+					sp:SetResourceType(-1);
+					n = n + 1;
+				end
+			end
+		end
+		pi = pi + 1;
+	end
+	print("Start tile luxuries stripped:", n);
 end
 ------------------------------------------------------------------------------
 function ConvertFlatDesertSaltCopper()
@@ -11138,6 +11898,9 @@ end
 ------------------------------------------------------------------------------
 function CountMireMountainNeighbors(plot)
 	local n = 0;
+	if plot == nil then
+		return n
+	end
 	local d = 0;
 	while d < DirectionTypes.NUM_DIRECTION_TYPES do
 		local adj = PlotDirNoXWrap(plot:GetX(), plot:GetY(), d);
@@ -11149,58 +11912,68 @@ function CountMireMountainNeighbors(plot)
 	return n;
 end
 ------------------------------------------------------------------------------
-function TrimMireTundraMountainClumps(iW, iH, skip, maxX)
+function BreakMireTundraMountainPairs(iW, iH, skip)
 	local seen = {};
+	local n = 0;
 	local y = 0;
 	while y < iH do
 		local x = 0;
 		while x < iW do
 			local i = y * iW + x + 1;
-			if seen[i] ~= true and mireBand[i] == 1 and skip[x] ~= true then
+			if seen[i] ~= true then
 				local plot = Map.GetPlot(x, y);
 				if plot ~= nil and plot:GetPlotType() == PlotTypes.PLOT_MOUNTAIN then
 					local comp = {};
 					local q = {plot};
 					seen[i] = true;
 					table.insert(comp, plot);
-					local nearFront = (x >= maxX - 3);
+					local hasTundra = (mireBand[i] == 1);
 					local qi = 1;
 					while qi <= #q do
 						local p = q[qi];
 						qi = qi + 1;
-						if p:GetX() >= maxX - 3 then
-							nearFront = true;
-						end
 						local d = 0;
 						while d < DirectionTypes.NUM_DIRECTION_TYPES do
 							local adj = PlotDirNoXWrap(p:GetX(), p:GetY(), d);
-							if adj ~= nil then
-								local ax = adj:GetX();
-								local ay = adj:GetY();
-								local ai = ay * iW + ax + 1;
-								if seen[ai] ~= true and mireBand[ai] == 1 and skip[ax] ~= true and adj:GetPlotType() == PlotTypes.PLOT_MOUNTAIN then
+							if adj ~= nil and adj:GetPlotType() == PlotTypes.PLOT_MOUNTAIN then
+								local ai = adj:GetY() * iW + adj:GetX() + 1;
+								if seen[ai] ~= true then
 									seen[ai] = true;
 									table.insert(q, adj);
 									table.insert(comp, adj);
+									if mireBand[ai] == 1 then
+										hasTundra = true;
+									end
 								end
 							end
 							d = d + 1;
 						end
 					end
-					if #comp >= 3 and nearFront == false then
-						comp = GetShuffledCopyOfTable(comp);
-						local keep = 1;
-						if Map.Rand(100, "Mire Spike Keep Pair") < 55 then
-							keep = 2;
+					if hasTundra and #comp == 2 then
+						local a = comp[1];
+						local b = comp[2];
+						local aFront = MireIsFrontRidgeX(a:GetX(), iW);
+						local bFront = MireIsFrontRidgeX(b:GetX(), iW);
+						local drop = a;
+						if aFront ~= bFront then
+							if aFront then
+								drop = b;
+							else
+								drop = a;
+							end
+						else
+							local d0 = mireBand[a:GetY() * iW + a:GetX() + 1];
+							local d1 = mireBand[b:GetY() * iW + b:GetX() + 1];
+							if d0 == 1 and d1 ~= 1 then
+								drop = a;
+							elseif d1 == 1 and d0 ~= 1 then
+								drop = b;
+							else
+								drop = comp[1 + Map.Rand(2, "Mire Spike Break Pair")];
+							end
 						end
-						if keep > #comp then
-							keep = #comp;
-						end
-						local ci = keep + 1;
-						while ci <= #comp do
-							comp[ci]:SetPlotType(PlotTypes.PLOT_LAND, false, false);
-							ci = ci + 1;
-						end
+						drop:SetPlotType(PlotTypes.PLOT_LAND, false, false);
+						n = n + 1;
 					end
 				end
 			end
@@ -11208,6 +11981,125 @@ function TrimMireTundraMountainClumps(iW, iH, skip, maxX)
 		end
 		y = y + 1;
 	end
+	print("Mire tundra mountain pairs broken:", n);
+end
+------------------------------------------------------------------------------
+function SlashMireMountainBlobs(iW, iH, skip)
+	local mirrored = (DEF_MIRRORED == 1);
+	local nCut = 0;
+	local pass = 1;
+	while pass <= 4 do
+		local seen = {};
+		local nThis = 0;
+		local y = 0;
+		while y < iH do
+			local x = 0;
+			while x < iW do
+				local i = y * iW + x + 1;
+				if seen[i] ~= true and skip[x] ~= true and MirrorOwnsPlot(x, y, mirrored, iW) then
+					local plot = Map.GetPlot(x, y);
+					if plot ~= nil and plot:GetPlotType() == PlotTypes.PLOT_MOUNTAIN then
+						local comp = {};
+						local q = {plot};
+						seen[i] = true;
+						table.insert(comp, plot);
+						local qi = 1;
+						while qi <= #q do
+							local p = q[qi];
+							qi = qi + 1;
+							local d = 0;
+							while d < DirectionTypes.NUM_DIRECTION_TYPES do
+								local adj = PlotDirNoXWrap(p:GetX(), p:GetY(), d);
+								if adj ~= nil and adj:GetPlotType() == PlotTypes.PLOT_MOUNTAIN then
+									local ax = adj:GetX();
+									local ai = adj:GetY() * iW + ax + 1;
+									if seen[ai] ~= true and skip[ax] ~= true and MirrorOwnsPlot(ax, adj:GetY(), mirrored, iW) then
+										seen[ai] = true;
+										table.insert(q, adj);
+										table.insert(comp, adj);
+									end
+								end
+								d = d + 1;
+							end
+						end
+						if #comp >= 7 then
+							local sx = 0;
+							local sy = 0;
+							local bi = 1;
+							while bi <= #comp do
+								sx = sx + comp[bi]:GetX();
+								sy = sy + comp[bi]:GetY();
+								bi = bi + 1;
+							end
+							local cx = sx / #comp;
+							local cy = sy / #comp;
+							local scored = {};
+							bi = 1;
+							while bi <= #comp do
+								local dx = comp[bi]:GetX() - cx;
+								local dy = comp[bi]:GetY() - cy;
+								table.insert(scored, {comp[bi], dx * dx + dy * dy});
+								bi = bi + 1;
+							end
+							table.sort(scored, function(a, b)
+								return a[2] < b[2]
+							end);
+							local want = 2 + Map.Rand(2, "Mire Mtn Slash");
+							local k = 1;
+							while k <= #scored and want > 0 do
+								local drop = scored[k][1];
+								if drop:GetPlotType() == PlotTypes.PLOT_MOUNTAIN then
+									drop:SetPlotType(PlotTypes.PLOT_HILLS, false, false);
+									want = want - 1;
+									nCut = nCut + 1;
+									nThis = nThis + 1;
+								end
+								k = k + 1;
+							end
+						end
+					end
+				end
+				x = x + 1;
+			end
+			y = y + 1;
+		end
+		if nThis == 0 then
+			break
+		end
+		pass = pass + 1;
+	end
+	print("Mire mountain slash tiles:", nCut);
+end
+------------------------------------------------------------------------------
+function ThinMireDenseForest(iW, iH, skip)
+	local mirrored = (DEF_MIRRORED == 1);
+	local n = 0;
+	local y = 0;
+	while y < iH do
+		local x = 0;
+		while x < iW do
+			local i = y * iW + x + 1;
+			if mireBand[i] == 2 and skip[x] ~= true and MirrorOwnsPlot(x, y, mirrored, iW) then
+				local plot = Map.GetPlot(x, y);
+				if plot ~= nil and plot:IsWater() == false and plot:GetPlotType() ~= PlotTypes.PLOT_MOUNTAIN and plot:GetFeatureType() == FeatureTypes.FEATURE_FOREST then
+					local neigh = CountFeatureNeighbors(plot, FeatureTypes.FEATURE_FOREST);
+					local chance = 0;
+					if neigh >= 6 then
+						chance = 10;
+					elseif neigh >= 5 then
+						chance = 5;
+					end
+					if chance > 0 and Map.Rand(100, "Mire Dense Forest Thin") < chance then
+						plot:SetFeatureType(FeatureTypes.NO_FEATURE, -1);
+						n = n + 1;
+					end
+				end
+			end
+			x = x + 1;
+		end
+		y = y + 1;
+	end
+	print("Mire dense forest thinned:", n);
 end
 ------------------------------------------------------------------------------
 function CarveMireCorridorPlot(plot)
@@ -11292,17 +12184,44 @@ function PickMirePlotNear(plots, tx, ty, maxDist)
 	return best;
 end
 ------------------------------------------------------------------------------
+function MireIsFrontRidgeX(x, iW)
+	if x == nil or iW == nil then
+		return false
+	end
+	local mid = math.floor(iW / 2);
+	local xCenter = mid - 4;
+	local xMin = xCenter - 2;
+	local xMax = xCenter + 2;
+	if xMin < 0 then
+		xMin = 0;
+	end
+	if xMax >= mid then
+		xMax = mid - 1;
+	end
+	if x >= xMin and x <= xMax then
+		return true
+	end
+	if IsSnowWrapX() then
+		local xw = GetSnowWrapLandMountainXs(iW);
+		if x >= xw - 2 and x <= xw + 2 then
+			return true
+		end
+	end
+	return false
+end
+------------------------------------------------------------------------------
 function MireApplyBandTerrain(plot, band)
 	if plot == nil or plot:IsWater() then
 		return
 	end
+	local keepMtn = MireIsFrontRidgeX(plot:GetX(), Map.GetGridSize());
 	if band == 1 then
-		if plot:GetPlotType() == PlotTypes.PLOT_MOUNTAIN then
+		if keepMtn == false and plot:GetPlotType() == PlotTypes.PLOT_MOUNTAIN then
 			plot:SetPlotType(PlotTypes.PLOT_LAND, false, false);
 		end
 		plot:SetTerrainType(TerrainTypes.TERRAIN_TUNDRA, false, false);
 	elseif band == 2 then
-		if plot:GetPlotType() == PlotTypes.PLOT_MOUNTAIN then
+		if keepMtn == false and plot:GetPlotType() == PlotTypes.PLOT_MOUNTAIN then
 			plot:SetPlotType(PlotTypes.PLOT_LAND, false, false);
 		end
 		if Map.Rand(100, "Mire Wood Plains") < 28 then
@@ -11311,11 +12230,13 @@ function MireApplyBandTerrain(plot, band)
 			plot:SetTerrainType(TerrainTypes.TERRAIN_GRASS, false, false);
 		end
 	else
-		if plot:GetPlotType() == PlotTypes.PLOT_MOUNTAIN then
-			plot:SetPlotType(PlotTypes.PLOT_HILLS, false, false);
-		end
-		if plot:GetPlotType() == PlotTypes.PLOT_HILLS and Map.Rand(100, "Mire Fen Hill Keep") >= 12 then
-			plot:SetPlotType(PlotTypes.PLOT_LAND, false, false);
+		if keepMtn == false then
+			if plot:GetPlotType() == PlotTypes.PLOT_MOUNTAIN then
+				plot:SetPlotType(PlotTypes.PLOT_HILLS, false, false);
+			end
+			if plot:GetPlotType() == PlotTypes.PLOT_HILLS and Map.Rand(100, "Mire Fen Hill Keep") >= 12 then
+				plot:SetPlotType(PlotTypes.PLOT_LAND, false, false);
+			end
 		end
 		plot:SetTerrainType(TerrainTypes.TERRAIN_GRASS, false, false);
 	end
@@ -11419,7 +12340,7 @@ function AddMireBands()
 						fenJitter = ((fracFen:GetHeight(x, y) - fLo) / (fHi - fLo) - 0.5) * 0.38;
 					end
 					local band = 1;
-					if yNorm + jitter < 0.67 then
+					if yNorm + jitter < 0.703 then
 						if yNorm + fenJitter < 0.32 then
 							band = 3;
 						else
@@ -11447,7 +12368,7 @@ function AddMireBands()
 			elseif band == 2 then
 				nWood = nWood + 1;
 				local plot = Map.GetPlot(x, y);
-				if plot ~= nil and plot:IsWater() == false then
+				if plot ~= nil and plot:IsWater() == false and MireIsFrontRidgeX(x, iW) == false then
 					table.insert(woodLand, plot);
 				end
 			elseif band == 3 then
@@ -11462,10 +12383,10 @@ function AddMireBands()
 		local x = 0;
 		while x < iW do
 			local i = y * iW + x + 1;
-			if mireBand[i] == 1 then
+			if mireBand[i] == 1 and MireIsFrontRidgeX(x, iW) == false then
 				local plot = Map.GetPlot(x, y);
 				if plot ~= nil and plot:IsWater() == false and plot:GetPlotType() ~= PlotTypes.PLOT_MOUNTAIN then
-					if Map.Rand(100, "Mire Spike Peak") < 10 then
+					if CountMireMountainNeighbors(plot) == 0 and Map.Rand(100, "Mire Spike Peak") < 14 then
 						plot:SetPlotType(PlotTypes.PLOT_MOUNTAIN, false, false);
 					end
 				end
@@ -11474,22 +12395,67 @@ function AddMireBands()
 		end
 		y = y + 1;
 	end
+	local spikeLand = {};
 	y = 0;
 	while y < iH do
 		local x = 0;
 		while x < iW do
 			local i = y * iW + x + 1;
-			if mireBand[i] == 1 then
+			if mireBand[i] == 1 and skip[x] ~= true and MireIsFrontRidgeX(x, iW) == false then
 				local plot = Map.GetPlot(x, y);
 				if plot ~= nil and plot:IsWater() == false and plot:GetPlotType() ~= PlotTypes.PLOT_MOUNTAIN then
-					if CountMireMountainNeighbors(plot) == 1 and Map.Rand(100, "Mire Spike Pair") < 22 then
-						plot:SetPlotType(PlotTypes.PLOT_MOUNTAIN, false, false);
-					end
+					table.insert(spikeLand, plot);
 				end
 			end
 			x = x + 1;
 		end
 		y = y + 1;
+	end
+	local nRare = 0;
+	if Map.Rand(100, "Mire Tundra Rare Blob") < 18 then
+		nRare = 1;
+	end
+	if Map.Rand(100, "Mire Tundra Rare Blob2") < 5 then
+		nRare = nRare + 1;
+	end
+	local rb = 0;
+	while rb < nRare and #spikeLand > 6 do
+		local seed = spikeLand[1 + Map.Rand(#spikeLand, "Mire Tundra Blob Seed")];
+		if seed:GetPlotType() ~= PlotTypes.PLOT_MOUNTAIN and CountMireMountainNeighbors(seed) == 0 then
+			local q = {seed};
+			seed:SetPlotType(PlotTypes.PLOT_MOUNTAIN, false, false);
+			local grown = 1;
+			local target = 3 + Map.Rand(3, "Mire Tundra Blob Size");
+			local qi = 1;
+			while qi <= #q and grown < target do
+				local p = q[qi];
+				qi = qi + 1;
+				local d = 0;
+				while d < DirectionTypes.NUM_DIRECTION_TYPES do
+					local adj = PlotDirNoXWrap(p:GetX(), p:GetY(), d);
+					if adj ~= nil and grown < target then
+						local ax = adj:GetX();
+						local ai = adj:GetY() * iW + ax + 1;
+						if skip[ax] ~= true and MireIsFrontRidgeX(ax, iW) == false and mireBand[ai] == 1 and adj:IsWater() == false and adj:GetPlotType() ~= PlotTypes.PLOT_MOUNTAIN then
+							if Map.Rand(100, "Mire Tundra Blob Grow") < 62 then
+								adj:SetPlotType(PlotTypes.PLOT_MOUNTAIN, false, false);
+								table.insert(q, adj);
+								grown = grown + 1;
+							end
+						end
+					end
+					d = d + 1;
+				end
+			end
+			if grown < 3 then
+				local fi = 2;
+				while fi <= #q do
+					q[fi]:SetPlotType(PlotTypes.PLOT_LAND, false, false);
+					fi = fi + 1;
+				end
+			end
+		end
+		rb = rb + 1;
 	end
 	local nBlobs = 2;
 	if iH >= 28 then
@@ -11519,7 +12485,7 @@ function AddMireBands()
 				if adj ~= nil and grown < target then
 					local ax = adj:GetX();
 					local ai = adj:GetY() * iW + ax + 1;
-					if skip[ax] ~= true and mireBand[ai] == 2 and adj:IsWater() == false and adj:GetPlotType() ~= PlotTypes.PLOT_MOUNTAIN then
+					if skip[ax] ~= true and MireIsFrontRidgeX(ax, iW) == false and mireBand[ai] == 2 and adj:IsWater() == false and adj:GetPlotType() ~= PlotTypes.PLOT_MOUNTAIN then
 						if Map.Rand(100, "Mire Wood Blob Grow") < 70 then
 							adj:SetPlotType(PlotTypes.PLOT_MOUNTAIN, false, false);
 							table.insert(q, adj);
@@ -11532,6 +12498,7 @@ function AddMireBands()
 		end
 		b = b + 1;
 	end
+	BreakMireTundraMountainPairs(iW, iH, skip);
 	local snowFrac = Fractal.Create(iW, iH, 4, Map.GetFractalFlags(), -1, -1);
 	local snowCut = {};
 	snowCut[0] = snowFrac:GetHeight(64);
@@ -11586,9 +12553,9 @@ function AddMireBands()
 	end
 	local hillFrac = Fractal.Create(iW, iH, 5, Map.GetFractalFlags(), -1, -1);
 	local hillCut = {};
-	hillCut[0] = hillFrac:GetHeight(82);
-	hillCut[1] = hillFrac:GetHeight(92);
-	hillCut[2] = hillFrac:GetHeight(97);
+	hillCut[0] = hillFrac:GetHeight(78);
+	hillCut[1] = hillFrac:GetHeight(90);
+	hillCut[2] = hillFrac:GetHeight(96);
 	local hillY = 0;
 	while hillY <= 2 and hillY < iH do
 		local cut = hillCut[hillY];
@@ -11606,9 +12573,9 @@ function AddMireBands()
 	end
 	hillY = 0;
 	while hillY <= 2 and hillY < iH do
-		local growChance = 48 - hillY * 16;
-		if growChance < 10 then
-			growChance = 10;
+		local growChance = 58 - hillY * 19;
+		if growChance < 12 then
+			growChance = 12;
 		end
 		local x = 0;
 		while x < iW do
@@ -11633,7 +12600,61 @@ function AddMireBands()
 		end
 		hillY = hillY + 1;
 	end
-	print("Mire bands spike:", nSpike, " wood:", nWood, " fen:", nFen);
+	local coastFlats = {};
+	y = 0;
+	while y < iH do
+		local x = 0;
+		while x < iW do
+			if skip[x] ~= true and MirrorOwnsPlot(x, y, mirrored, iW) then
+				local plot = Map.GetPlot(x, y);
+				if plot ~= nil and plot:IsWater() == false and plot:GetPlotType() == PlotTypes.PLOT_LAND and plot:IsCoastalLand() then
+					local westWater = false;
+					local d = 0;
+					while d < DirectionTypes.NUM_DIRECTION_TYPES do
+						local adj = PlotDirNoXWrap(x, y, d);
+						if adj ~= nil and adj:IsWater() and adj:IsLake() == false and adj:GetX() <= x then
+							westWater = true;
+							break
+						end
+						d = d + 1;
+					end
+					if westWater then
+						table.insert(coastFlats, plot);
+					end
+				end
+			end
+			x = x + 1;
+		end
+		y = y + 1;
+	end
+	local nCoastHill = 0;
+	local ci = 1;
+	while ci <= #coastFlats do
+		if Map.Rand(100, "Mire Back Coast Hill") < 22 then
+			coastFlats[ci]:SetPlotType(PlotTypes.PLOT_HILLS, false, false);
+			nCoastHill = nCoastHill + 1;
+		end
+		ci = ci + 1;
+	end
+	ci = 1;
+	while ci <= #coastFlats do
+		local plot = coastFlats[ci];
+		if plot:GetPlotType() == PlotTypes.PLOT_HILLS then
+			local d = 0;
+			while d < DirectionTypes.NUM_DIRECTION_TYPES do
+				local adj = PlotDirNoXWrap(plot:GetX(), plot:GetY(), d);
+				if adj ~= nil and adj:IsWater() == false and adj:GetPlotType() == PlotTypes.PLOT_LAND and skip[adj:GetX()] ~= true then
+					if Map.Rand(100, "Mire Back Coast Hill Grow") < 28 then
+						adj:SetPlotType(PlotTypes.PLOT_HILLS, false, false);
+						nCoastHill = nCoastHill + 1;
+					end
+				end
+				d = d + 1;
+			end
+		end
+		ci = ci + 1;
+	end
+	print("Mire bands spike:", nSpike, " wood:", nWood, " fen:", nFen, " backHills:", nCoastHill);
 end
 ------------------------------------------------------------------------------
 function AddMireFeatures()
@@ -11854,6 +12875,10 @@ function AddMireFeatures()
 		fi = fi + 1;
 	end
 	local fenForN, fenForT = PlaceClusteredFeature(forestLeft, FeatureTypes.FEATURE_FOREST, 15, "Mire Fen Forest");
+	BreakMireTundraMountainPairs(iW, iH, skip);
+	SlashMireMountainBlobs(iW, iH, skip);
+	BreakMireTundraMountainPairs(iW, iH, skip);
+	ThinMireDenseForest(iW, iH, skip);
 	print("Mire pines:", pineN, "/", pineT, " marsh:", marshN, "/", marshT, " fen forest:", fenForN, "/", fenForT, " lakes:", lakes);
 end
 ------------------------------------------------------------------------------
@@ -14357,6 +15382,7 @@ function CollectTundraFrontPlots(cols, iW, iH)
 			if x >= 0 and x < iW and ((not mirrored) or (x <= iW * 0.5)) then
 				local plot = Map.GetPlot(x, y);
 				if plot ~= nil
+					and PlotIsMajorStart(plot) == false
 					and plot:IsWater() == false
 					and plot:GetPlotType() ~= PlotTypes.PLOT_MOUNTAIN
 					and plot:GetResourceType(-1) == -1 then
@@ -15318,6 +16344,7 @@ function PlaceDesertMainlandResourceBoost()
 			if skip[x] ~= true and MirrorOwnsPlot(x, y, mirrored, iW) then
 				local plot = Map.GetPlot(x, y);
 				if plot ~= nil
+					and PlotIsMajorStart(plot) == false
 					and plot:IsWater() == false
 					and plot:GetPlotType() ~= PlotTypes.PLOT_MOUNTAIN
 					and plot:GetResourceType(-1) == -1 then
@@ -15360,6 +16387,128 @@ function PlaceDesertMainlandResourceBoost()
 		i = i + 1;
 	end
 	print("Desert mainland resource boost:", placed, "/", n);
+end
+------------------------------------------------------------------------------
+function PlaceOasisFrontColumnExtras()
+	if IsOasisClimate() == false then
+		return
+	end
+	local iW, iH = Map.GetGridSize();
+	local cols = OasisFrontMostColumns(iW, iH);
+	if #cols < 1 then
+		return
+	end
+	local inFront = {};
+	local ci = 1;
+	while ci <= #cols do
+		inFront[cols[ci]] = true;
+		ci = ci + 1;
+	end
+	local skip = FillMireSkip(iW);
+	local mirrored = (DEF_MIRRORED == 1);
+	local ids = {
+		GameInfoTypes["RESOURCE_BANANA"],
+		GameInfoTypes["RESOURCE_WHEAT"],
+		GameInfoTypes["RESOURCE_COW"],
+		GameInfoTypes["RESOURCE_SHEEP"],
+		GameInfoTypes["RESOURCE_DEER"],
+		GameInfoTypes["RESOURCE_STONE"],
+		GameInfoTypes["RESOURCE_HORSE"],
+		GameInfoTypes["RESOURCE_IRON"],
+		GameInfoTypes["RESOURCE_INCENSE"],
+		GameInfoTypes["RESOURCE_GOLD"],
+		GameInfoTypes["RESOURCE_SILVER"],
+		GameInfoTypes["RESOURCE_GEMS"],
+		GameInfoTypes["RESOURCE_COPPER"],
+		GameInfoTypes["RESOURCE_SALT"],
+		GameInfoTypes["RESOURCE_OIL"],
+	};
+	local ironID = GameInfoTypes["RESOURCE_IRON"];
+	local horseID = GameInfoTypes["RESOURCE_HORSE"];
+	local oilID = GameInfoTypes["RESOURCE_OIL"];
+	local deerID = GameInfoTypes["RESOURCE_DEER"];
+	local furID = GameInfoTypes["RESOURCE_FUR"];
+	local empty = {};
+	local forestCands = {};
+	local y = 0;
+	while y < iH do
+		local x = 0;
+		while x < iW do
+			if inFront[x] == true and skip[x] ~= true and MirrorOwnsPlot(x, y, mirrored, iW) then
+				local plot = Map.GetPlot(x, y);
+				if plot ~= nil and PlotIsMajorStart(plot) == false and plot:IsWater() == false and plot:GetPlotType() ~= PlotTypes.PLOT_MOUNTAIN then
+					if PlotHasNaturalWonder(plot) == false then
+						if plot:GetResourceType(-1) == -1 then
+							table.insert(empty, plot);
+						end
+						local ter = plot:GetTerrainType();
+						if ter == TerrainTypes.TERRAIN_TUNDRA or ter == TerrainTypes.TERRAIN_PLAINS then
+							if plot:GetFeatureType() == FeatureTypes.NO_FEATURE then
+								table.insert(forestCands, plot);
+							end
+						end
+					end
+				end
+			end
+			x = x + 1;
+		end
+		y = y + 1;
+	end
+	local resPlaced = 0;
+	if #empty > 0 then
+		local shuffled = GetShuffledCopyOfTable(empty);
+		local target = math.floor(#shuffled * 0.12 + 0.5);
+		if target < 1 and #shuffled > 0 then
+			target = 1;
+		end
+		local i = 1;
+		while i <= #shuffled and resPlaced < target do
+			local plot = shuffled[i];
+			local nFit = 0;
+			local fit = {};
+			local k = 1;
+			while k <= #ids do
+				if ids[k] ~= nil and plot:CanHaveResource(ids[k]) then
+					nFit = nFit + 1;
+					fit[nFit] = ids[k];
+				end
+				k = k + 1;
+			end
+			if nFit > 0 then
+				local pick = fit[Map.Rand(nFit, "Oasis front res") + 1];
+				local amt = 1;
+				if pick == ironID or pick == horseID or pick == oilID then
+					amt = 2;
+				end
+				plot:SetResourceType(pick, amt);
+				resPlaced = resPlaced + 1;
+			end
+			i = i + 1;
+		end
+	end
+	local forests = 0;
+	local fi = 1;
+	while fi <= #forestCands do
+		local plot = forestCands[fi];
+		if plot:GetFeatureType() == FeatureTypes.NO_FEATURE then
+			local res = plot:GetResourceType(-1);
+			local resOk = true;
+			if res ~= nil and res ~= -1 then
+				resOk = false;
+				if deerID ~= nil and res == deerID then
+					resOk = true;
+				elseif furID ~= nil and res == furID then
+					resOk = true;
+				end
+			end
+			if resOk and Map.Rand(100, "Oasis front forest") < 15 then
+				plot:SetFeatureType(FeatureTypes.FEATURE_FOREST, -1);
+				forests = forests + 1;
+			end
+		end
+		fi = fi + 1;
+	end
+	print("Oasis front columns extras: res", resPlaced, "forest", forests, "cols", #cols);
 end
 ------------------------------------------------------------------------------
 function PlaceOasisForcedHorses()
@@ -15580,6 +16729,8 @@ function StartPlotSystem()
 	WeeveeDbg("PlaceNaturalWonders");
 	start_plot_database:PlaceNaturalWonders(wonderargs)
 	StripSeparatorNaturalWonders();
+	MaybePlaceFujiHorses(start_plot_database);
+	EnsureStartHillsFloor();
 	WeeveeDbg("PlaceResources");
 	AddWastelandWaterLayout();
 	FixWastelandFloodPlains();
@@ -15591,6 +16742,7 @@ function StartPlotSystem()
 	PlaceOasisForcedHorses();
 	PlaceDesertTundraFrontResources();
 	PlaceDesertMainlandResourceBoost();
+	PlaceOasisFrontColumnExtras();
 	PlaceMurkTundraSheepStone();
 	PlaceMurkWheatAndMarshStone();
 	PlaceMurkSnowStoneIron();
@@ -15653,6 +16805,8 @@ function StartPlotSystem()
 	WeeveeDbgCall("ThinOasisCoastalLuxuries", ThinOasisCoastalLuxuries);
 	EnsureMajorIronHills();
 	EnsureLuxuryQuota();
+	EnsureStartLuxuryFloor();
+	StripStartTileLuxuries();
 	ConvertFlatDesertSaltCopper();
 	WeeveeDbg("before mirror");
 	if DEF_MIRRORED == 1 then
