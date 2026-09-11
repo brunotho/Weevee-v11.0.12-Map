@@ -51,7 +51,32 @@ end
 function WeeveeDbgReset()
 	WeeveeDbgOpen("w");
 	WeeveeDbg("weevee dbg start");
-	TongueResetLine();
+	TiltedResetLine();
+end
+------------------------------------------------------------------------------
+-- Separate, append-only log that survives across multiple map rolls (unlike
+-- weevee_dbg.log, which WeeveeDbgReset truncates at the start of every new
+-- generation) -- for the water-budget investigation, so results from many
+-- rolls in a row accumulate in one place instead of overwriting each other.
+local WEEVEE_PERSIST_PATHS = {
+	"C:\\Users\\bbruno\\Documents\\My Games\\Sid Meier's Civilization 5\\Logs\\weevee_persist.log",
+	"weevee_persist.log",
+};
+function WeeveeDbgPersist(msg)
+	if io == nil or io.open == nil then
+		return
+	end
+	local i = 1;
+	while i <= #WEEVEE_PERSIST_PATHS do
+		local f = io.open(WEEVEE_PERSIST_PATHS[i], "a");
+		if f ~= nil then
+			f:write(tostring(msg));
+			f:write("\n");
+			f:close();
+			return
+		end
+		i = i + 1;
+	end
 end
 function WeeveeDbgCall(name, fn, a1, a2, a3, a4, a5)
 	WeeveeDbg("enter " .. name);
@@ -133,7 +158,7 @@ function GetMapScriptInfo()
 					"[COLOR_HIGHLIGHT_TEXT]Wasteland (WIP)[ENDCOLOR]",
 					"[COLOR_HIGHLIGHT_TEXT]Peaky[ENDCOLOR]",
 					"[COLOR_HIGHLIGHT_TEXT]Frosty (WIP)[ENDCOLOR]",
-					"[COLOR_HIGHLIGHT_TEXT]Diagonal (WIP)[ENDCOLOR]",
+					"[COLOR_HIGHLIGHT_TEXT]Standard - Diagonal[ENDCOLOR]",
 					"[COLOR_HIGHLIGHT_TEXT]Slate (WIP)[ENDCOLOR]",
 					"[COLOR_HIGHLIGHT_TEXT][ICON_CAPITAL] Random[ENDCOLOR]"
 				},
@@ -205,6 +230,7 @@ function ResolveBarrierSplit()
 		if avoid ~= AVOID_CLIMATES_STRONG then
 			table.insert(pool, SPLIT_SNOW_V2);
 			table.insert(pool, SPLIT_PEAKS);
+			table.insert(pool, SPLIT_TONGUE); -- Standard - Diagonal
 		end
 		if avoid ~= AVOID_CLIMATES_WEAK then
 			table.insert(pool, SPLIT_WETLAND);
@@ -326,14 +352,15 @@ function GetBarrierConfig()
 	end
 	if ops == SPLIT_TONGUE then
 		return {
-			kind = "tongue",
+			kind = "snow",
 			wrap = wrap,
-			mountainPct = 8,
-			hillPct = 22,
+			mountainPct = 2,
+			hillPct = 24,
 			iceLakePermille = 0,
-			forestPct = 0,
+			forestPct = 14,
 			oasisPctOfFlat = 0,
-			chaoticMountains = true,
+			chaoticMountains = false,
+			tilted = true,
 		};
 	end
 	if ops == SPLIT_SNAKY then
@@ -583,9 +610,9 @@ function OasisJungleExists()
 	return false
 end
 ------------------------------------------------------------------------------
-function IsTongue()
+function IsTiltedMirrorAxis()
 	local cfg = GetBarrierConfig();
-	return cfg ~= nil and (cfg.kind == "tongue" or cfg.kind == "snaky");
+	return cfg ~= nil and (cfg.tilted == true or cfg.kind == "snaky");
 end
 ------------------------------------------------------------------------------
 function IsSnaky()
@@ -593,15 +620,19 @@ function IsSnaky()
 	return cfg ~= nil and cfg.kind == "snaky";
 end
 ------------------------------------------------------------------------------
-local tongueLineReady = false;
-local tongueS0 = 0;
+local tiltedLineReady = false;
+local tiltedS0 = 0;
+local tiltedShiftReady = false;
+local tiltedShiftEven = 0;
+local tiltedShiftOdd = 0;
 local tongueJungleDepth = nil;
 local snakyFrac = nil;
 local snakyAmp = nil;
 local tongueEconFrac = nil;
 local tongueEconFrac2 = nil;
-function TongueResetLine()
-	tongueLineReady = false;
+function TiltedResetLine()
+	tiltedLineReady = false;
+	tiltedShiftReady = false;
 	tongueJungleDepth = nil;
 	snakyFrac = nil;
 	snakyAmp = nil;
@@ -610,28 +641,69 @@ function TongueResetLine()
 	saltPlanResolved = false;
 end
 ------------------------------------------------------------------------------
-function TongueCubeS(col, row)
+function TiltedCubeS(col, row)
 	local q = col - math.floor(row / 2);
 	return 0 - q - row;
 end
 ------------------------------------------------------------------------------
-function TongueEnsureLine()
-	if tongueLineReady then
+function TiltedEnsureLine()
+	if tiltedLineReady then
 		return
 	end
 	local iW, iH = Map.GetGridSize();
 	local cx = math.floor((iW - 1) / 2);
 	local cy = math.floor((iH - 1) / 2);
-	tongueS0 = TongueCubeS(cx, cy);
-	tongueLineReady = true;
+	tiltedS0 = TiltedCubeS(cx, cy);
+	tiltedLineReady = true;
 end
 ------------------------------------------------------------------------------
-function TongueSignedDist(x, y)
-	TongueEnsureLine();
-	return TongueCubeS(x, y) - tongueS0;
+function TiltedSignedDist(x, y)
+	TiltedEnsureLine();
+	return TiltedCubeS(x, y) - tiltedS0;
 end
 ------------------------------------------------------------------------------
-function TongueFoldWest(x, y)
+-- The hex offset->cube conversion isn't exactly antisymmetric under the
+-- engine's 180-degree mirror copy: TiltedSignedDist(x,y) + TiltedSignedDist(mirror(x,y))
+-- is a constant, not 0 -- and that constant differs by row parity. A barrier
+-- band centered on plain TiltedSignedDist==0 therefore doesn't line up with
+-- itself after mirroring (the copy lands a few columns off, widening/streaking
+-- the band). Centering the band on that constant instead fixes it exactly.
+function TiltedEnsureShift()
+	if tiltedShiftReady then
+		return
+	end
+	tiltedShiftReady = true;
+	TiltedEnsureLine();
+	local iW, iH = Map.GetGridSize();
+	local function constantFor(y0)
+		local mx = iW - 1;
+		local my = iH - 1 - y0;
+		return TiltedSignedDist(0, y0) + TiltedSignedDist(mx, my);
+	end
+	tiltedShiftEven = (1 - constantFor(0)) / 2;
+	tiltedShiftOdd = (1 - constantFor(1)) / 2;
+end
+------------------------------------------------------------------------------
+-- Row-local equivalent of the constant `mid` column, for climates whose
+-- separator runs along the tilted fold instead of a straight vertical line.
+-- Mirror-consistent column for this row (see TiltedEnsureShift) -- a window
+-- centered here stays the same width after the engine's mirror copy.
+function TiltedFoldMid(y)
+	TiltedEnsureLine();
+	TiltedEnsureShift();
+	local raw = math.floor(y / 2) - y - tiltedS0;
+	local shift = tiltedShiftEven;
+	if y % 2 ~= 0 then
+		shift = tiltedShiftOdd;
+	end
+	-- On a map height divisible by 4 (see GetMapInitData) this shift always
+	-- lands on a whole number -- exact-width and visually straight at once.
+	-- (On other heights it can land on a half-integer instead, which has no
+	-- rounding that's both; see the Standard-Diagonal width/smoothness notes.)
+	return math.floor(raw + shift + 0.5);
+end
+------------------------------------------------------------------------------
+function TiltedFoldWest(x, y)
 	if DEF_MIRRORED ~= 1 then
 		return x, y
 	end
@@ -650,10 +722,10 @@ function MirrorOwnsPlot(x, y, mirrored, iW)
 	if x <= iW * 0.5 then
 		return true
 	end
-	if IsTongue() == false then
+	if IsTiltedMirrorAxis() == false then
 		return false
 	end
-	return TongueSignedDist(x, y) > 0
+	return TiltedSignedDist(x, y) > 0
 end
 ------------------------------------------------------------------------------
 function TongueNoGoWidth()
@@ -680,7 +752,7 @@ function TongueGetJungleDepth()
 end
 ------------------------------------------------------------------------------
 function TongueIsHomePlot(x, y)
-	if IsTongue() == false then
+	if IsSnaky() == false then
 		return true
 	end
 	local plot = Map.GetPlot(x, y);
@@ -693,14 +765,14 @@ function TongueIsHomePlot(x, y)
 	if plot:GetTerrainType() == TerrainTypes.TERRAIN_TUNDRA then
 		return false
 	end
-	if TongueSignedDist(x, y) <= 0 then
+	if TiltedSignedDist(x, y) <= 0 then
 		return false
 	end
 	return true
 end
 ------------------------------------------------------------------------------
 function TongueResourcePlotOk(x, y)
-	if IsTongue() == false then
+	if IsSnaky() == false then
 		return true
 	end
 	local plot = Map.GetPlot(x, y);
@@ -713,14 +785,14 @@ function TongueResourcePlotOk(x, y)
 	if plot:GetPlotType() == PlotTypes.PLOT_MOUNTAIN then
 		return false
 	end
-	if TongueSignedDist(x, y) <= 0 then
+	if TiltedSignedDist(x, y) <= 0 then
 		return false
 	end
 	return true
 end
 ------------------------------------------------------------------------------
 function FilterPlotIndexListToTongueHome(list, iW)
-	if IsTongue() == false or list == nil then
+	if IsSnaky() == false or list == nil then
 		return list
 	end
 	local out = {};
@@ -738,7 +810,7 @@ function FilterPlotIndexListToTongueHome(list, iW)
 end
 ------------------------------------------------------------------------------
 function FilterTongueHomeLuxuryLists(lists)
-	if IsTongue() == false or lists == nil then
+	if IsSnaky() == false or lists == nil then
 		return lists
 	end
 	local iW = Map.GetGridSize();
@@ -755,7 +827,7 @@ function FilterTongueHomeLuxuryLists(lists)
 end
 ------------------------------------------------------------------------------
 function FilterTongueHomeResourceLists(self)
-	if IsTongue() == false then
+	if IsSnaky() == false then
 		return
 	end
 	local iW = Map.GetGridSize();
@@ -795,14 +867,14 @@ function FilterTongueHomeResourceLists(self)
 end
 ------------------------------------------------------------------------------
 function TongueIsBarrierPlot(x, y)
-	if IsTongue() == false then
+	if IsSnaky() == false then
 		return false
 	end
 	return TongueIsHomePlot(x, y) == false
 end
 ------------------------------------------------------------------------------
 function PlotRejectsNaturalWonder(x, y)
-	if IsTongue() == false then
+	if IsSnaky() == false then
 		return false
 	end
 	local plot = Map.GetPlot(x, y);
@@ -812,55 +884,69 @@ function PlotRejectsNaturalWonder(x, y)
 	if plot:GetTerrainType() == TerrainTypes.TERRAIN_TUNDRA then
 		return true
 	end
-	if TongueSignedDist(x, y) <= 0 then
+	if TiltedSignedDist(x, y) <= 0 then
 		return true
 	end
 	return false
 end
 ------------------------------------------------------------------------------
 function TongueStartTooClose(x, y)
-	if IsTongue() == false then
+	if IsSnaky() then
+		if TongueIsHomePlot(x, y) == false then
+			return true
+		end
+		local yy = y - 3;
+		while yy <= y + 3 do
+			local xx = x - 3;
+			while xx <= x + 3 do
+				if Map.PlotDistance(x, y, xx, yy) <= 3 then
+					local adj = Map.GetPlot(xx, yy);
+					if adj ~= nil and adj:GetTerrainType() == TerrainTypes.TERRAIN_TUNDRA then
+						return true
+					end
+				end
+				xx = xx + 1;
+			end
+			yy = yy + 1;
+		end
 		return false
 	end
-	if TongueIsHomePlot(x, y) == false then
-		return true
+	if IsTiltedMirrorAxis() == false then
+		return false
 	end
-	local yy = y - 3;
-	while yy <= y + 3 do
-		local xx = x - 3;
-		while xx <= x + 3 do
-			if Map.PlotDistance(x, y, xx, yy) <= 3 then
-				local adj = Map.GetPlot(xx, yy);
-				if adj ~= nil and adj:GetTerrainType() == TerrainTypes.TERRAIN_TUNDRA then
-					return true
-				end
-			end
-			xx = xx + 1;
-		end
-		yy = yy + 1;
+	-- Standard-Diagonal: the barrier band wanders with the fold from row to
+	-- row, so "distance to the front" has to be measured from this row's own
+	-- local band instead of a fixed column -- otherwise a start could land
+	-- right against the barrier on rows where it has swung close by.
+	local _, centerN = ResolveSnowWrapWidths();
+	local half = centerN / 2;
+	local mid = TiltedFoldMid(y);
+	local frontBuffer = 5; -- matches the minimum-distance convention used elsewhere (NudgePlayerStartsMinDist, EnforceMinStartDistance, wonder ripple)
+	if x >= mid - half - frontBuffer and x <= mid + half - 1 + frontBuffer then
+		return true
 	end
 	return false
 end
 ------------------------------------------------------------------------------
-function TongueSkipMirrorDest(sx, sy, dx, dy)
-	if IsTongue() == false then
+function TiltedSkipMirrorDest(sx, sy, dx, dy)
+	if IsTiltedMirrorAxis() == false then
 		return false
 	end
 	local iW, iH = Map.GetGridSize();
 	if dy >= iH * 0.5 then
 		return false
 	end
-	if TongueSignedDist(dx, dy) > 0 and TongueSignedDist(sx, sy) <= 0 then
+	if TiltedSignedDist(dx, dy) > 0 and TiltedSignedDist(sx, sy) <= 0 then
 		return true
 	end
 	return false
 end
 ------------------------------------------------------------------------------
-function TongueCopyHomePastMidToPair(copyRes)
+function TiltedCopyHomePastMidToPair(copyRes)
 	if DEF_MIRRORED ~= 1 then
 		return
 	end
-	if IsTongue() == false then
+	if IsTiltedMirrorAxis() == false then
 		return
 	end
 	local iW, iH = Map.GetGridSize();
@@ -869,7 +955,7 @@ function TongueCopyHomePastMidToPair(copyRes)
 	while y < iH do
 		local x = mid;
 		while x < iW do
-			if TongueSignedDist(x, y) > 0 then
+			if TiltedSignedDist(x, y) > 0 then
 				local plot = Map.GetPlot(x, y);
 				local mx = iW - x - 1;
 				local my = iH - y - 1;
@@ -890,7 +976,7 @@ function TongueCopyHomePastMidToPair(copyRes)
 	end
 end
 ------------------------------------------------------------------------------
-function TongueCopyWestToEast()
+function CopyWestToEast()
 	if DEF_MIRRORED ~= 1 then
 		return
 	end
@@ -902,7 +988,7 @@ function TongueCopyWestToEast()
 		while y < iH do
 			local mx = iW - x - 1;
 			local my = iH - y - 1;
-			if TongueSkipMirrorDest(x, y, mx, my) == false then
+			if TiltedSkipMirrorDest(x, y, mx, my) == false then
 				local plot = Map.GetPlot(x, y);
 				local mp = Map.GetPlot(mx, my);
 				if plot ~= nil and mp ~= nil then
@@ -915,7 +1001,7 @@ function TongueCopyWestToEast()
 		end
 		x = x + 1;
 	end
-	TongueCopyHomePastMidToPair(false);
+	TiltedCopyHomePastMidToPair(false);
 end
 ------------------------------------------------------------------------------
 function GetSungodLuxuryIDs(asp)
@@ -1529,7 +1615,7 @@ end
 local AddStrategicBalanceResourcesVanilla = AssignStartingPlots.AddStrategicBalanceResources;
 function AssignStartingPlots:AddStrategicBalanceResources(region_number)
 	AddStrategicBalanceResourcesVanilla(self, region_number);
-	if IsTongue() then
+	if IsSnaky() then
 		local start_point_data = self.startingPlots[region_number];
 		if start_point_data ~= nil then
 			local sx = start_point_data[1];
@@ -2503,6 +2589,14 @@ function GetMapInitData(worldSize)
 				w = w + 4;
 			end
 		end
+		if cfg ~= nil and cfg.tilted == true then
+			-- The tilted barrier's row-mirroring math needs a map height that's
+			-- a multiple of 4 to be simultaneously exact-width and visually
+			-- straight (see the Standard-Diagonal width/smoothness investigation).
+			-- Small/Tiny's default height (22) isn't, so pin it to one that is.
+			h = 20;
+			w = w + 4;
+		end
 		print("Map canvas:", w, "x", h, "(base", grid_size[1], "x", grid_size[2], ")");
 		WeeveeDbg("canvas " .. tostring(w) .. "x" .. tostring(h) .. " wrapX=" .. tostring(IsSnowWrapX()));
 		return {
@@ -2620,7 +2714,7 @@ function GetSnowWrapWaterBounds(iW)
 	local wrapHalf = wrapN / 2;
 	local centerHalf = centerN / 2;
 	local mid = math.floor(iW / 2);
-	if IsTongue() then
+	if IsSnaky() then
 		centerHalf = 0;
 	end
 	local minX = wrapHalf + 4;
@@ -2917,7 +3011,7 @@ function WaterAllowedAtX(x)
 			return false
 		end
 	end
-	if centerHalf > 0 and IsTongue() == false then
+	if centerHalf > 0 and IsTiltedMirrorAxis() == false then
 		if x >= (mid - centerHalf - 4) and x <= (mid + centerHalf - 1 + 4) then
 			return false
 		end
@@ -2929,13 +3023,19 @@ function WaterAllowedAtXY(x, y)
 	if WaterAllowedAtX(x) == false then
 		return false
 	end
-	if IsTongue() then
-		local wx, wy = TongueFoldWest(x, y);
+	if IsTiltedMirrorAxis() then
+		local wx, wy = TiltedFoldWest(x, y);
 		local lim = TongueHillDist();
 		if IsSnaky() then
 			lim = 4;
+		else
+			-- Standard-Diagonal: keep water at least 7 tiles clear of the
+			-- barrier band's own edge (not just the bare fold line) -- this
+			-- inherited Tongue's ~1-tile gap, far tighter than intended here.
+			local _, centerN = ResolveSnowWrapWidths();
+			lim = math.floor(centerN / 2) + 7;
 		end
-		if TongueSignedDist(wx, wy) <= lim then
+		if TiltedSignedDist(wx, wy) <= lim then
 			return false
 		end
 	end
@@ -2946,7 +3046,7 @@ function SnakyInlandSeaSeedOk(x, y, iW, iH)
 	if WaterAllowedAtXY(x, y) == false then
 		return false
 	end
-	local d = TongueSignedDist(x, y);
+	local d = TiltedSignedDist(x, y);
 	if d <= 4 then
 		return false
 	end
@@ -3191,7 +3291,7 @@ function ScrubWaterNearSnow()
 	end
 end
 ------------------------------------------------------------------------------
-function GetSnowWrapColumns(iW)
+function GetSnowWrapColumns(iW, y)
 	local cols = {};
 	local wrapN, centerN = ResolveSnowWrapWidths();
 	if wrapN > 0 then
@@ -3203,9 +3303,12 @@ function GetSnowWrapColumns(iW)
 			table.insert(cols, x);
 		end
 	end
-	if centerN > 0 and IsTongue() == false then
+	if centerN > 0 and IsSnaky() == false then
 		local half = centerN / 2;
 		local mid = math.floor(iW / 2);
+		if IsTiltedMirrorAxis() and y ~= nil then
+			mid = TiltedFoldMid(y);
+		end
 		for x = mid - half, mid + half - 1 do
 			table.insert(cols, x);
 		end
@@ -3213,16 +3316,19 @@ function GetSnowWrapColumns(iW)
 	return cols;
 end
 ------------------------------------------------------------------------------
-function GetSnowWrapTundraColumns(iW)
+function GetSnowWrapTundraColumns(iW, y)
 	local cols = {};
 	local wrapN, centerN = ResolveSnowWrapWidths();
 	local mid = math.floor(iW / 2);
+	if IsTiltedMirrorAxis() and y ~= nil then
+		mid = TiltedFoldMid(y);
+	end
 	if wrapN > 0 then
 		local half = wrapN / 2;
 		table.insert(cols, half);
 		table.insert(cols, iW - half - 1);
 	end
-	if centerN > 0 and IsTongue() == false then
+	if centerN > 0 and IsSnaky() == false then
 		local half = centerN / 2;
 		table.insert(cols, mid - half - 1);
 		table.insert(cols, mid + half);
@@ -3910,8 +4016,320 @@ function ShapeNoWrapBackstrip(plotTypes, iW, iH)
 	end
 end
 ------------------------------------------------------------------------------
+-- Standard-Diagonal's water, built from scratch against a measured reference
+-- (Murky's own salt water averaged ~7.6% of its map across 13 rolls). Runs
+-- entirely on the plotTypes array (pre-Map-commit), same as the functions
+-- above. Spec agreed with the user:
+--   ~8% of the map in salt water (natural variance, like Murky's own spread).
+--   50% of maps: all of that budget as one continuous back (west) coast.
+--   25%: 1 inland sea; 25%: 2 inland seas -- each sized 4-10 tiles and
+--     deducted from the 8% budget before the back coast gets what's left.
+--   The back coast gets one deliberately "thick" pocket sized for a big
+--     island (5-15 tiles), plus 0-6 small islands (1-4 tiles) elsewhere.
+--   Islands force-carve their own 1-tile moat rather than relying on enough
+--     open water already being there -- simpler and can't silently fail.
+function PlaceDiagonalBackWater(plotTypes, iW, iH)
+	if plotTypes == nil or IsTiltedMirrorAxis() == false or IsSnaky() then
+		return
+	end
+	local evenN = {{0, 1}, {1, 0}, {0, -1}, {-1, -1}, {-1, 0}, {-1, 1}};
+	local oddN = {{1, 1}, {1, 0}, {1, -1}, {0, -1}, {-1, 0}, {0, 1}};
+	local function neighborDirs(y)
+		if y % 2 == 0 then
+			return evenN;
+		end
+		return oddN;
+	end
+	local function setPlot(x, y, pt)
+		if x < 0 or x >= iW or y < 0 or y >= iH then
+			return
+		end
+		plotTypes[y * iW + x + 1] = pt;
+		local mx = iW - x - 1;
+		local my = iH - y - 1;
+		plotTypes[my * iW + mx + 1] = pt;
+	end
+	local function getPlot(x, y)
+		if x < 0 or x >= iW or y < 0 or y >= iH then
+			return nil
+		end
+		return plotTypes[y * iW + x + 1];
+	end
+	local function inBlob(blob, x, y)
+		local bi = 1;
+		while bi <= #blob do
+			if blob[bi][1] == x and blob[bi][2] == y then
+				return true
+			end
+			bi = bi + 1;
+		end
+		return false
+	end
+	-- Grows into open water only (for inland seas): stops at land/mountains,
+	-- ownership and the barrier's front-distance buffer.
+	local function growWater(seedX, seedY, size, allowedFn)
+		local blob = {{seedX, seedY}};
+		setPlot(seedX, seedY, PlotTypes.PLOT_OCEAN);
+		while #blob < size do
+			local candidates = {};
+			local bi = 1;
+			while bi <= #blob do
+				local p = blob[bi];
+				local dirs = neighborDirs(p[2]);
+				local d = 1;
+				while d <= 6 do
+					local nx = p[1] + dirs[d][1];
+					local ny = p[2] + dirs[d][2];
+					if nx >= 0 and nx < iW and ny >= 0 and ny < iH and getPlot(nx, ny) ~= PlotTypes.PLOT_OCEAN and allowedFn(nx, ny) then
+						table.insert(candidates, {nx, ny});
+					end
+					d = d + 1;
+				end
+				bi = bi + 1;
+			end
+			if #candidates < 1 then
+				break
+			end
+			local pick = candidates[Map.Rand(#candidates, "DiagWater Sea Grow") + 1];
+			setPlot(pick[1], pick[2], PlotTypes.PLOT_OCEAN);
+			table.insert(blob, pick);
+		end
+		return blob;
+	end
+	-- Forces land regardless of what's currently there -- used for islands,
+	-- which then get their own moat carved rather than needing to find
+	-- naturally-open water already the right shape.
+	local function forceGrowLand(seedX, seedY, size)
+		local blob = {{seedX, seedY}};
+		local function paintOne(x, y)
+			if Map.Rand(4, "DiagWater Island Hills") == 0 then
+				setPlot(x, y, PlotTypes.PLOT_HILLS);
+			else
+				setPlot(x, y, PlotTypes.PLOT_LAND);
+			end
+		end
+		paintOne(seedX, seedY);
+		while #blob < size do
+			local candidates = {};
+			local bi = 1;
+			while bi <= #blob do
+				local p = blob[bi];
+				local dirs = neighborDirs(p[2]);
+				local d = 1;
+				while d <= 6 do
+					local nx = p[1] + dirs[d][1];
+					local ny = p[2] + dirs[d][2];
+					if nx >= 0 and nx < iW and ny >= 0 and ny < iH and inBlob(blob, nx, ny) == false then
+						table.insert(candidates, {nx, ny});
+					end
+					d = d + 1;
+				end
+				bi = bi + 1;
+			end
+			if #candidates < 1 then
+				break
+			end
+			local pick = candidates[Map.Rand(#candidates, "DiagWater Island Grow") + 1];
+			paintOne(pick[1], pick[2]);
+			table.insert(blob, pick);
+		end
+		return blob;
+	end
+	local function carveMoat(blob)
+		local bi = 1;
+		while bi <= #blob do
+			local p = blob[bi];
+			local dirs = neighborDirs(p[2]);
+			local d = 1;
+			while d <= 6 do
+				local nx = p[1] + dirs[d][1];
+				local ny = p[2] + dirs[d][2];
+				-- Off the west map edge is already water for this purpose --
+				-- setPlot's own bounds check simply skips it, no gap needed.
+				if nx >= 0 and nx < iW and ny >= 0 and ny < iH and inBlob(blob, nx, ny) == false then
+					setPlot(nx, ny, PlotTypes.PLOT_OCEAN);
+				end
+				d = d + 1;
+			end
+			bi = bi + 1;
+		end
+	end
+
+	local totalTiles = iW * iH;
+	local pct = 6 + Map.Rand(5, "DiagWater TargetPct"); -- 6-10, centered ~8
+	-- Every tile painted below also paints its mirror partner (setPlot does
+	-- both), so the final salt water count ends up double whatever this
+	-- function paints on the west side. Track everything in west-side units
+	-- against half the full-map target, not the full target itself. Trimmed
+	-- by 0.5% off the top since the coast itself now covers less height (see
+	-- coastWinH below) and would otherwise just get pushed elsewhere instead
+	-- of actually reduced.
+	local westTarget = math.floor(totalTiles * (pct - 0.5) / 100 / 2);
+
+	local mirrored = (DEF_MIRRORED == 1);
+	local function inlandAllowed(x, y)
+		if x < 4 then
+			return false; -- stay clear of the back coast itself
+		end
+		if MirrorOwnsPlot(x, y, mirrored, iW) == false then
+			return false
+		end
+		if WaterAllowedAtXY(x, y) == false then
+			return false; -- respects the barrier's front-distance buffer
+		end
+		return true
+	end
+
+	local modeRoll = Map.Rand(100, "DiagWater Mode");
+	local nInland = 0;
+	if modeRoll >= 75 then
+		nInland = 2;
+	elseif modeRoll >= 50 then
+		nInland = 1;
+	end
+	local usedByInland = 0;
+	local ii = 1;
+	while ii <= nInland do
+		local size = 4 + Map.Rand(7, "DiagWater Inland Size"); -- 4-10
+		local seedX, seedY;
+		local attempt = 1;
+		local xSpan = math.max(1, math.floor(iW * 0.4));
+		while attempt <= 60 do
+			local tx = 4 + Map.Rand(xSpan, "DiagWater Inland X");
+			local ty = Map.Rand(iH, "DiagWater Inland Y");
+			if inlandAllowed(tx, ty) then
+				seedX, seedY = tx, ty;
+				break
+			end
+			attempt = attempt + 1;
+		end
+		if seedX ~= nil then
+			local blob = growWater(seedX, seedY, size, inlandAllowed);
+			usedByInland = usedByInland + #blob;
+		end
+		ii = ii + 1;
+	end
+
+	local westBackBudget = westTarget - usedByInland;
+	if westBackBudget < 6 then
+		westBackBudget = 6;
+	end
+
+	-- Big island size and the bulge window's length are rolled up front so
+	-- the bulge's reserved share of the budget can actually fit the island
+	-- plus a moat, rather than being an arbitrary fixed depth.
+	local bigSize = 5 + Map.Rand(11, "DiagWater Big Island Size"); -- 5-15
+	local bulgeLen = 4 + Map.Rand(3, "DiagWater Bulge Len"); -- 4-6 rows
+
+	-- The coast itself only covers ~80% of the map's height, not the full
+	-- run -- picked as one contiguous, randomly-positioned window rather than
+	-- spreading the gap out, so there's a real stretch of plain coastline at
+	-- one or both ends instead of touching the back edge everywhere.
+	local coastWinH = math.max(bulgeLen + 4, math.floor(iH * 0.8));
+	if coastWinH > iH then
+		coastWinH = iH;
+	end
+	local coastWinY0 = 0;
+	if coastWinH < iH then
+		coastWinY0 = Map.Rand(iH - coastWinH + 1, "DiagWater Coast Window");
+	end
+	local coastWinY1 = coastWinY0 + coastWinH; -- exclusive
+
+	-- Continuous back coast: a random-walk-depth coastline (same idea as
+	-- Standard's own back strip), but the bulge (for the big island) and the
+	-- regular rows each draw a *share* of westBackBudget instead of the
+	-- bulge being extra depth added on top of it -- that's what let the
+	-- total run away before.
+	local bulgeReserve = bigSize + 15; -- island + a generous moat/room allowance
+	if bulgeReserve > westBackBudget * 0.7 then
+		bulgeReserve = math.floor(westBackBudget * 0.7);
+	end
+	if bulgeReserve < bigSize then
+		bulgeReserve = bigSize;
+	end
+	local regularBudget = westBackBudget - bulgeReserve;
+	local regularRows = math.max(1, coastWinH - bulgeLen);
+	local avgDepth = math.max(1, regularBudget / regularRows);
+	local minD = 1;
+	local maxD = math.max(minD + 1, math.ceil(avgDepth) + 1);
+	local depth = math.max(1, math.floor(avgDepth + 0.5));
+	local bulgeSpan = math.max(1, coastWinH - bulgeLen);
+	local bulgeStart = coastWinY0 + Map.Rand(bulgeSpan, "DiagWater Bulge Start");
+	local bulgeEnd = bulgeStart + bulgeLen - 1;
+	local bulgeDepth = math.max(maxD + 2, math.floor(bulgeReserve / bulgeLen));
+
+	local y = 0;
+	while y < iH do
+		if y < coastWinY0 or y >= coastWinY1 then
+			-- Outside the coast window: mainland actually touches the true
+			-- west edge here. GeneratePlotsByRegion unconditionally paints a
+			-- 1-2 tile ocean rim along the whole west border before this
+			-- function ever runs, so it has to be explicitly undone here or
+			-- these rows would still show water regardless of the window.
+			local x = 0;
+			while x <= 3 do
+				setPlot(x, y, PlotTypes.PLOT_LAND);
+				x = x + 1;
+			end
+		else
+			local step = Map.Rand(3, "DiagWater Coast Walk") - 1;
+			depth = depth + step;
+			if depth < minD then
+				depth = minD;
+			end
+			if depth > maxD then
+				depth = maxD;
+			end
+			local rowDepth = depth;
+			if y >= bulgeStart and y <= bulgeEnd then
+				rowDepth = bulgeDepth;
+			end
+			local x = 0;
+			while x < rowDepth do
+				setPlot(x, y, PlotTypes.PLOT_OCEAN);
+				x = x + 1;
+			end
+		end
+		y = y + 1;
+	end
+
+	-- Big island: forced, then moated, seeded inside the bulge so there's
+	-- always room regardless of how the coast walk actually turned out.
+	-- (bigSize was already rolled above, to size the bulge reservation.)
+	local bigY = bulgeStart + Map.Rand(bulgeLen, "DiagWater Big Island Y");
+	local bigX = 2 + Map.Rand(math.max(1, bulgeDepth - 3), "DiagWater Big Island X");
+	local bigBlob = forceGrowLand(bigX, bigY, bigSize);
+	carveMoat(bigBlob);
+
+	-- Small islands sprayed through the thinner parts of the coast, outside
+	-- the bulge.
+	local nSmall = Map.Rand(7, "DiagWater Small Island Count"); -- 0-6
+	local si = 1;
+	while si <= nSmall do
+		local ty = Map.Rand(iH, "DiagWater Small Island Y");
+		if ty < bulgeStart - 1 or ty > bulgeEnd + 1 then
+			local tx = Map.Rand(3, "DiagWater Small Island X");
+			if getPlot(tx, ty) == PlotTypes.PLOT_OCEAN then
+				local size = 1 + Map.Rand(4, "DiagWater Small Island Size"); -- 1-4
+				local blob = forceGrowLand(tx, ty, size);
+				carveMoat(blob);
+			end
+		end
+		si = si + 1;
+	end
+
+	local diagLine = "DiagWater: pct=" .. pct .. " westTarget=" .. westTarget .. " inland=" .. nInland
+		.. " usedByInland=" .. usedByInland .. " westBackBudget=" .. westBackBudget
+		.. " bulgeReserve=" .. bulgeReserve .. " bigSize=" .. bigSize .. " smallCount=" .. nSmall
+		.. " iH=" .. iH .. " coastWinY0=" .. coastWinY0 .. " coastWinY1=" .. coastWinY1 .. " coastWinH=" .. coastWinH;
+	print(diagLine);
+	WeeveeDbg(diagLine);
+end
+------------------------------------------------------------------------------
 function PlaceStandardEdgeSeas(plotTypes, iW, iH)
-	if plotTypes == nil or IsStandardClimate() == false then
+	if plotTypes == nil or IsStandardClimate() == false or IsTiltedMirrorAxis() then
+		-- Standard-Diagonal's water (back coast, inland seas, islands) is
+		-- entirely handled by PlaceDiagonalBackWater instead, from scratch.
 		return
 	end
 	local cutIgnored, seas = ResolveSaltWaterPlan();
@@ -3921,11 +4339,20 @@ function PlaceStandardEdgeSeas(plotTypes, iW, iH)
 	local evenN = {{0, 1}, {1, 0}, {0, -1}, {-1, -1}, {-1, 0}, {-1, 1}};
 	local oddN = {{1, 1}, {1, 0}, {1, -1}, {0, -1}, {-1, 0}, {0, 1}};
 	local mid = math.floor(iW / 2) - 1;
+	local function rowMid(y)
+		if IsTiltedMirrorAxis() then
+			return TiltedFoldMid(y) - 1;
+		end
+		return mid;
+	end
 	local function allowed(x, y)
-		if x < 0 or y < 0 or y >= iH or x > mid then
+		if x < 0 or y < 0 or y >= iH then
 			return false
 		end
-		if WaterAllowedAtX(x) == false then
+		if MirrorOwnsPlot(x, y, true, iW) == false then
+			return false
+		end
+		if WaterAllowedAtXY(x, y) == false then
 			return false
 		end
 		return true
@@ -3949,10 +4376,10 @@ function PlaceStandardEdgeSeas(plotTypes, iW, iH)
 				ty = Map.Rand(iH, "Standard sea west y");
 			elseif edge == 1 then
 				ty = Map.Rand(2, "Standard sea south y");
-				tx = Map.Rand(mid + 1, "Standard sea south x");
+				tx = Map.Rand(rowMid(ty) + 1, "Standard sea south x");
 			else
 				ty = iH - 1 - Map.Rand(2, "Standard sea north y");
-				tx = Map.Rand(mid + 1, "Standard sea north x");
+				tx = Map.Rand(rowMid(ty) + 1, "Standard sea north x");
 			end
 			if allowed(tx, ty) then
 				if edge == 0 or plotTypes[ty * iW + tx + 1] ~= PlotTypes.PLOT_OCEAN then
@@ -4221,8 +4648,8 @@ function AssignStartingPlots:ExaminePlotForNaturalWondersEligibility(x, y)
 	end
 	if IsSnowBarrier() then
 		local iW = Map.GetGridSize();
-		local snowCols = GetSnowWrapColumns(iW);
-		local tundraCols = GetSnowWrapTundraColumns(iW);
+		local snowCols = GetSnowWrapColumns(iW, y);
+		local tundraCols = GetSnowWrapTundraColumns(iW, y);
 		local i = 1;
 		while snowCols[i] ~= nil do
 			if x == snowCols[i] then
@@ -4262,7 +4689,9 @@ function WonderTooCloseToCapital(x, y)
 	local starts = GetMajorStartPlots();
 	local i = 1;
 	while i <= #starts do
-		if Map.PlotDistance(x, y, starts[i]:GetX(), starts[i]:GetY()) <= 2 then
+		-- Matches the vanilla natural-wonders ripple target (PlaceImpactAndRipples:
+		-- "set a minimum distance of 5 plots (4 ripples) away").
+		if Map.PlotDistance(x, y, starts[i]:GetX(), starts[i]:GetY()) <= 5 then
 			return true
 		end
 		i = i + 1;
@@ -4394,7 +4823,7 @@ function FixKailashGibraltarAdjacency(wtype)
 end
 ------------------------------------------------------------------------------
 function StripSeparatorNaturalWonders()
-	if IsTongue() == false then
+	if IsSnaky() == false then
 		return
 	end
 	local nwFeat = {};
@@ -4803,19 +5232,6 @@ end
 ------------------------------------------------------------------------------
 function GetSaltCoastPlotIndices(asp)
 	local iW, iH = Map.GetGridSize();
-	local skip = {};
-	local cols = GetSnowWrapColumns(iW);
-	local ci = 1;
-	while ci <= #cols do
-		skip[cols[ci]] = true;
-		ci = ci + 1;
-	end
-	cols = GetSnowWrapTundraColumns(iW);
-	ci = 1;
-	while ci <= #cols do
-		skip[cols[ci]] = true;
-		ci = ci + 1;
-	end
 	local maxX = iW - 1;
 	if DEF_MIRRORED == 1 then
 		maxX = math.floor(iW * 0.5);
@@ -4823,9 +5239,22 @@ function GetSaltCoastPlotIndices(asp)
 	local list = {};
 	local y = 0;
 	while y < iH do
+		local skip = {};
+		local cols = GetSnowWrapColumns(iW, y);
+		local ci = 1;
+		while ci <= #cols do
+			skip[cols[ci]] = true;
+			ci = ci + 1;
+		end
+		cols = GetSnowWrapTundraColumns(iW, y);
+		ci = 1;
+		while ci <= #cols do
+			skip[cols[ci]] = true;
+			ci = ci + 1;
+		end
 		local x = 0;
 		while x <= maxX do
-			if skip[x] ~= true and (IsTongue() == false or TongueResourcePlotOk(x, y)) then
+			if skip[x] ~= true and (IsTiltedMirrorAxis() == false or TongueResourcePlotOk(x, y)) then
 				local plot = Map.GetPlot(x, y);
 				if plot ~= nil
 					and plot:GetPlotType() == PlotTypes.PLOT_OCEAN
@@ -5389,8 +5818,26 @@ function MultilayeredFractal:GeneratePlotsByRegion()
 			local x_west, x_east = iW / 2 - 4, iW / 2 + 3;
 			for loop = 1, iNumMountainsPerColumn do
 				local y_west, y_east = front_shuffled[loop], iH - 1 - front_shuffled[loop];
-				self.wholeworldPlotTypes[y_west * iW + x_west + 1] = PlotTypes.PLOT_MOUNTAIN;
-				self.wholeworldPlotTypes[y_east * iW + x_east + 1] = PlotTypes.PLOT_MOUNTAIN;
+				local px_west, px_east = x_west, x_east;
+				if IsTiltedMirrorAxis() then
+					-- Follow the fold at each mountain's own row instead of a
+					-- fixed column, so the "front" ridge tracks the diagonal
+					-- barrier instead of cutting straight through it. Vary the
+					-- gap to the barrier's edge (0-2 tiles, same roll on both
+					-- mirrored sides) instead of always sitting exactly 1 tile
+					-- off it.
+					local gap = Map.Rand(3, "Front Mountain Gap");
+					local _, gapCenterN = ResolveSnowWrapWidths();
+					local gapHalf = gapCenterN / 2;
+					px_west = TiltedFoldMid(y_west) - (gapHalf + 1 + gap);
+					px_east = TiltedFoldMid(y_east) + (gapHalf + gap);
+				end
+				if px_west >= 0 and px_west < iW then
+					self.wholeworldPlotTypes[y_west * iW + px_west + 1] = PlotTypes.PLOT_MOUNTAIN;
+				end
+				if px_east >= 0 and px_east < iW then
+					self.wholeworldPlotTypes[y_east * iW + px_east + 1] = PlotTypes.PLOT_MOUNTAIN;
+				end
 			end
 
 			if IsSnowWrapX() then
@@ -5418,7 +5865,7 @@ function MultilayeredFractal:GeneratePlotsByRegion()
 			if x < minX or x > maxX or y < minY or y > maxY then
 				return false
 			end
-			if IsTongue() and WaterAllowedAtXY(x, y) == false then
+			if IsTiltedMirrorAxis() and WaterAllowedAtXY(x, y) == false then
 				return false
 			end
 			return true
@@ -5550,6 +5997,10 @@ function MultilayeredFractal:GeneratePlotsByRegion()
 	if IsSnowNoWrap() then
 		if IsOasisClimate() then
 			FillOasisWestNoOcean(self.wholeworldPlotTypes, iW, iH);
+		elseif IsTiltedMirrorAxis() and IsSnaky() == false then
+			-- IsTiltedMirrorAxis() is also true for Snaky (Slate) -- it must
+			-- keep using its own ShapeNoWrapBackstrip path, not this one.
+			PlaceDiagonalBackWater(self.wholeworldPlotTypes, iW, iH);
 		else
 			ShapeNoWrapBackstrip(self.wholeworldPlotTypes, iW, iH);
 		end
@@ -5644,39 +6095,53 @@ function GeneratePlotTypes()
 		local iW, iH = Map.GetGridSize();
 		local firstRingYIsEven = {{0, 1}, {1, 0}, {0, -1}, {-1, -1}, {-1, 0}, {-1, 1}};
 		local firstRingYIsOdd = {{1, 1}, {1, 0}, {1, -1}, {0, -1}, {-1, 0}, {0, 1}};
+		local function applyFoothillAt(x, y, chance)
+			local plot = Map.GetPlot(x, y)
+			if plot ~= nil and plot:IsFlatlands() then
+				local isEvenY, search_table = true, {};
+				if y / 2 > math.floor(y / 2) then
+					isEvenY = false;
+				end
+				if isEvenY then
+					search_table = firstRingYIsEven;
+				else
+					search_table = firstRingYIsOdd;
+				end
+				local nearMtn = false;
+				for loop, plot_adjustments in ipairs(search_table) do
+					local searchX = x + plot_adjustments[1];
+					local searchY = y + plot_adjustments[2];
+					local searchPlot = Map.GetPlot(searchX, searchY)
+					if searchPlot ~= nil and searchPlot:GetPlotType() == PlotTypes.PLOT_MOUNTAIN then
+						nearMtn = true;
+						break
+					end
+				end
+				if nearMtn then
+					if chance >= 100 or Map.Rand(100, "Front Foothill") < chance then
+						plot:SetPlotType(PlotTypes.PLOT_HILLS, false, false)
+					end
+				end
+			end
+		end
 		local function applyFoothills(xStart, xEnd, chance)
 			if chance == nil then
 				chance = 100;
 			end
 			for x = xStart, xEnd do
 				for y = 1, iH - 2 do
-					local plot = Map.GetPlot(x, y)
-					if plot ~= nil and plot:IsFlatlands() then
-						local isEvenY, search_table = true, {};
-						if y / 2 > math.floor(y / 2) then
-							isEvenY = false;
-						end
-						if isEvenY then
-							search_table = firstRingYIsEven;
-						else
-							search_table = firstRingYIsOdd;
-						end
-						local nearMtn = false;
-						for loop, plot_adjustments in ipairs(search_table) do
-							local searchX = x + plot_adjustments[1];
-							local searchY = y + plot_adjustments[2];
-							local searchPlot = Map.GetPlot(searchX, searchY)
-							if searchPlot ~= nil and searchPlot:GetPlotType() == PlotTypes.PLOT_MOUNTAIN then
-								nearMtn = true;
-								break
-							end
-						end
-						if nearMtn then
-							if chance >= 100 or Map.Rand(100, "Front Foothill") < chance then
-								plot:SetPlotType(PlotTypes.PLOT_HILLS, false, false)
-							end
-						end
-					end
+					applyFoothillAt(x, y, chance)
+				end
+			end
+		end
+		local function applyFoothillsNearFold(loOffset, hiOffset, chance)
+			if chance == nil then
+				chance = 100;
+			end
+			for y = 1, iH - 2 do
+				local mid = TiltedFoldMid(y);
+				for x = mid + loOffset, mid + hiOffset do
+					applyFoothillAt(x, y, chance)
 				end
 			end
 		end
@@ -5688,12 +6153,16 @@ function GeneratePlotTypes()
 			fLo = iW / 2 - 6;
 			fHi = iW / 2 + 5;
 			foothillChance = 50;
-		elseif cfg ~= nil and cfg.chaoticMountains and IsTongue() == false then
+		elseif cfg ~= nil and cfg.chaoticMountains and IsTiltedMirrorAxis() == false then
 			fLo = iW / 2 - 7;
 			fHi = iW / 2 + 6;
 		end
-		if IsTongue() == false then
-			applyFoothills(fLo, fHi, foothillChance)
+		if IsSnaky() == false then
+			if IsTiltedMirrorAxis() then
+				applyFoothillsNearFold(fLo - iW / 2, fHi - iW / 2, foothillChance)
+			else
+				applyFoothills(fLo, fHi, foothillChance)
+			end
 		end
 		if IsSnowWrapX() then
 			local x_wrap_west, x_wrap_east = GetSnowWrapLandMountainXs(iW);
@@ -5787,7 +6256,6 @@ function GenerateTerrain()
 	AddMireBands();
 	AddPeaksLayout();
 	AddFrostyLayout();
-	AddTongueLayout();
 	AddSnakyLayout();
 	WeeveeDbg("GenerateTerrain done");
 end
@@ -7166,7 +7634,10 @@ function EnsureLuxuryQuota()
 			end
 			ui = ui + 1;
 		end
-	elseif IsStandardClimate() == false and nUnique < wantU then
+	elseif (IsStandardClimate() == false or IsTiltedMirrorAxis()) and nUnique < wantU then
+		-- Standard-Diagonal opts into the fuller randomized target (like every
+		-- non-Standard climate) instead of plain Standard's floor-only padding,
+		-- since it's a much smaller map and needs the extra effort to get there.
 		local unused = {};
 		for res in GameInfo.Resources() do
 			if IsWeeveeLuxuryID(res.ID) and counts[res.ID] == nil and banned[res.ID] ~= true then
@@ -7601,7 +8072,6 @@ function AddFeatures()
 	AddFrostyForests();
 	AddFrostySouthJungle();
 	AddFrostyIce();
-	AddTongueFeatures();
 	AddSnakyFeatures();
 	ForestMountainsToBareTarget();
 end
@@ -8117,24 +8587,32 @@ function AddRivers()
 	print("Skirmish - Adding Rivers");
 	riverEdgeList = {};
 	local SplitOps = Map.GetCustomOption(OPT_CENTER_SPLIT)
-	local snowRiverSkip = {};
-	if IsOldSnow() or IsSnowBarrier() then
-		local snowCols = GetSnowWrapColumns(iW);
-		local tundraCols = GetSnowWrapTundraColumns(iW);
+	local snowRiverSkipActive = (IsOldSnow() or IsSnowBarrier());
+	local cfgRiversSkip = GetBarrierConfig();
+	local peaksRiversSkip = (cfgRiversSkip ~= nil and cfgRiversSkip.kind == "peaks");
+	local function snowRiverSkip(x, y)
+		if snowRiverSkipActive == false then
+			return false
+		end
+		if peaksRiversSkip == false then
+			local snowCols = GetSnowWrapColumns(iW, y);
+			local si = 1;
+			while si <= #snowCols do
+				if snowCols[si] == x then
+					return true
+				end
+				si = si + 1;
+			end
+		end
+		local tundraCols = GetSnowWrapTundraColumns(iW, y);
 		local si = 1;
-		local cfgRiversSkip = GetBarrierConfig();
-		local peaksRiversSkip = (cfgRiversSkip ~= nil and cfgRiversSkip.kind == "peaks");
-		while si <= #snowCols do
-			if peaksRiversSkip == false then
-				snowRiverSkip[snowCols[si]] = true;
+		while si <= #tundraCols do
+			if tundraCols[si] == x then
+				return true
 			end
 			si = si + 1;
 		end
-		si = 1;
-		while si <= #tundraCols do
-			snowRiverSkip[tundraCols[si]] = true;
-			si = si + 1;
-		end
+		return false
 	end
 	local passConditions = {
 		function(plot)
@@ -8199,7 +8677,7 @@ function AddRivers()
 				-- Plot in wrap-front buffer, ignore it.
 			elseif OasisIsWestHinterlandX(current_x, iW) then
 				-- Oasis tack-on desert: no river sources.
-			elseif snowRiverSkip[current_x] then
+			elseif snowRiverSkip(current_x, current_y) then
 				-- Plot in buffer zone, ignore it.
 			elseif TongueIsBarrierPlot(current_x, current_y) then
 				-- Plot in tongue barrier, ignore it.
@@ -8374,11 +8852,11 @@ function AssignStartingPlots:GenerateRegions(args)
 				backPad = 0;
 			end
 			self.inhabited_WestX = setforward + backPad;
-			if IsTongue() then
+			if IsTiltedMirrorAxis() then
 				centerHalf = 0;
 			end
 			self.inhabited_Width = (mid - centerHalf) - setback - 1 - self.inhabited_WestX + 1;
-			if IsTongue() and IsSnaky() == false then
+			if IsTiltedMirrorAxis() and IsSnaky() == false then
 				local keep = math.floor(self.inhabited_Height * 0.62);
 				if keep < 8 then
 					keep = 8;
@@ -8419,7 +8897,7 @@ function AssignStartingPlots:GenerateRegions(args)
 			local wrapHalf = wrapN / 2;
 			local centerHalf = centerN / 2;
 			local mid = math.floor(iW / 2);
-			if IsTongue() then
+			if IsTiltedMirrorAxis() then
 				centerHalf = 0;
 			end
 			self.inhabited_WestX = (mid + centerHalf) + setback;
@@ -8428,7 +8906,7 @@ function AssignStartingPlots:GenerateRegions(args)
 				lastEast = iW - setforward - wrapHalf;
 			end
 			self.inhabited_Width = lastEast - self.inhabited_WestX + 1;
-			if IsTongue() and IsSnaky() == false then
+			if IsTiltedMirrorAxis() and IsSnaky() == false then
 				local keep = math.floor(self.inhabited_Height * 0.62);
 				if keep < 8 then
 					keep = 8;
@@ -8795,24 +9273,26 @@ function SetDivide()
 		local cfg = GetBarrierConfig();
 		local barrierTerrain = BarrierTerrainType(cfg);
 		local transTerrain = BarrierTransitionType(cfg);
-		local tundraCols = GetSnowWrapTundraColumns(iW);
-		local snowCols = GetSnowWrapColumns(iW);
 		local mirrored = (DEF_MIRRORED == 1);
 		local hillTop = cfg.mountainPct + cfg.hillPct;
 		for y = 0, iH - 1 do
+			local tundraCols = GetSnowWrapTundraColumns(iW, y);
+			local snowCols = GetSnowWrapColumns(iW, y);
 			for _, x in ipairs(tundraCols) do
-				local plot = Map.GetPlot(x, y)
-				plot:SetFeatureType(FeatureTypes.NO_FEATURE, -1);
-				plot:SetTerrainType(transTerrain, false, false);
+				if MirrorOwnsPlot(x, y, mirrored, iW) then
+					local plot = Map.GetPlot(x, y)
+					plot:SetFeatureType(FeatureTypes.NO_FEATURE, -1);
+					plot:SetTerrainType(transTerrain, false, false);
+				end
 			end
 			for _, x in ipairs(snowCols) do
-				local plot = Map.GetPlot(x, y)
-				if plot:IsWater() then
-					plot:SetPlotType(PlotTypes.PLOT_LAND, false, false);
-				end
-				plot:SetFeatureType(FeatureTypes.NO_FEATURE, -1);
-				plot:SetTerrainType(barrierTerrain, false, false);
-				if (not mirrored) or (x <= iW * 0.5) then
+				if MirrorOwnsPlot(x, y, mirrored, iW) then
+					local plot = Map.GetPlot(x, y)
+					if plot:IsWater() then
+						plot:SetPlotType(PlotTypes.PLOT_LAND, false, false);
+					end
+					plot:SetFeatureType(FeatureTypes.NO_FEATURE, -1);
+					plot:SetTerrainType(barrierTerrain, false, false);
 					if cfg.kind == "snow" then
 						plot:SetPlotType(PlotTypes.PLOT_LAND, false, false);
 					elseif cfg.iceLakePermille > 0 and Map.Rand(1000, "Barrier Ice Lake") < cfg.iceLakePermille then
@@ -8851,35 +9331,46 @@ function PaintStandardSnowRelief()
 		return
 	end
 	local iW, iH = Map.GetGridSize();
-	local snowCols = GetSnowWrapColumns(iW);
-	local tundra = {};
-	local tc = GetSnowWrapTundraColumns(iW);
-	local ti = 1;
-	while ti <= #tc do
-		tundra[tc[ti]] = true;
-		ti = ti + 1;
-	end
 	local mirrored = (DEF_MIRRORED == 1);
 	local evenN = {{0, 1}, {1, 0}, {0, -1}, {-1, -1}, {-1, 0}, {-1, 1}};
 	local oddN = {{1, 1}, {1, 0}, {1, -1}, {0, -1}, {-1, 0}, {0, 1}};
 	local land = {};
-	local ci = 1;
-	while ci <= #snowCols do
-		local x = snowCols[ci];
-		if tundra[x] ~= true and ((not mirrored) or (x <= iW * 0.5)) then
-			local y = 0;
-			while y < iH do
+	local y = 0;
+	while y < iH do
+		local snowCols = GetSnowWrapColumns(iW, y);
+		local tundra = {};
+		local tc = GetSnowWrapTundraColumns(iW, y);
+		local ti = 1;
+		while ti <= #tc do
+			tundra[tc[ti]] = true;
+			ti = ti + 1;
+		end
+		local ci = 1;
+		while ci <= #snowCols do
+			local x = snowCols[ci];
+			if tundra[x] ~= true and MirrorOwnsPlot(x, y, mirrored, iW) then
 				local plot = Map.GetPlot(x, y);
 				if plot ~= nil and plot:IsWater() == false then
 					table.insert(land, plot);
 				end
-				y = y + 1;
 			end
+			ci = ci + 1;
 		end
-		ci = ci + 1;
+		y = y + 1;
 	end
 	if #land < 1 then
 		return
+	end
+	local function isTundraColAt(x, y)
+		local tc = GetSnowWrapTundraColumns(iW, y);
+		local i = 1;
+		while i <= #tc do
+			if tc[i] == x then
+				return true
+			end
+			i = i + 1;
+		end
+		return false
 	end
 	local nPeak = 2 + Map.Rand(2, "Snow Peak Count");
 	local gap = math.floor(#land / (nPeak + 1));
@@ -8912,7 +9403,7 @@ function PaintStandardSnowRelief()
 		while d < DirectionTypes.NUM_DIRECTION_TYPES do
 			local adj = PlotDirNoXWrap(seed:GetX(), seed:GetY(), d);
 			if adj ~= nil and adj:IsWater() == false and adj:GetPlotType() ~= PlotTypes.PLOT_MOUNTAIN then
-				if tundra[adj:GetX()] ~= true then
+				if isTundraColAt(adj:GetX(), adj:GetY()) ~= true then
 					adj:SetPlotType(PlotTypes.PLOT_HILLS, false, false);
 					nHill = nHill + 1;
 				end
@@ -8927,7 +9418,7 @@ function PaintStandardSnowRelief()
 				while d2 < DirectionTypes.NUM_DIRECTION_TYPES do
 					local ring = PlotDirNoXWrap(adj:GetX(), adj:GetY(), d2);
 					if ring ~= nil and ring:IsWater() == false and ring:GetPlotType() == PlotTypes.PLOT_LAND then
-		if tundra[adj:GetX()] ~= true and Map.Rand(100, "Snow Foothill") < 28 then
+		if isTundraColAt(adj:GetX(), adj:GetY()) ~= true and Map.Rand(100, "Snow Foothill") < 28 then
 							ring:SetPlotType(PlotTypes.PLOT_HILLS, false, false);
 							nHill = nHill + 1;
 						end
@@ -8962,7 +9453,7 @@ function PaintStandardSnowRelief()
 					local ny = cy + dirs[di][2];
 					local adj = Map.GetPlot(nx, ny);
 					if adj ~= nil and adj:IsWater() == false and adj:GetPlotType() == PlotTypes.PLOT_LAND then
-						if tundra[nx] ~= true then
+						if isTundraColAt(nx, ny) ~= true then
 							table.insert(picks, adj);
 						end
 					end
@@ -9005,7 +9496,7 @@ function PaintStandardSnowRelief()
 				while d < DirectionTypes.NUM_DIRECTION_TYPES and grown < want do
 					local adj = PlotDirNoXWrap(p:GetX(), p:GetY(), d);
 					if adj ~= nil and adj:GetPlotType() == PlotTypes.PLOT_LAND then
-						if tundra[adj:GetX()] ~= true and Map.Rand(100, "Snow Ice Grow") < 70 then
+						if isTundraColAt(adj:GetX(), adj:GetY()) ~= true and Map.Rand(100, "Snow Ice Grow") < 70 then
 							table.insert(blob, adj);
 						end
 					end
@@ -9086,30 +9577,30 @@ function CapBarrierMountains()
 		return
 	end
 	local iW, iH = Map.GetGridSize();
-	local tundra = {};
-	local tc = GetSnowWrapTundraColumns(iW);
-	local ti = 1;
-	while ti <= #tc do
-		tundra[tc[ti]] = true;
-		ti = ti + 1;
-	end
-	local snowCols = GetSnowWrapColumns(iW);
 	local mirrored = (DEF_MIRRORED == 1);
 	local mtns = {};
-	local ci = 1;
-	while ci <= #snowCols do
-		local x = snowCols[ci];
-		if tundra[x] ~= true and ((not mirrored) or (x <= iW * 0.5)) then
-			local y = 0;
-			while y < iH do
+	local y = 0;
+	while y < iH do
+		local tundra = {};
+		local tc = GetSnowWrapTundraColumns(iW, y);
+		local ti = 1;
+		while ti <= #tc do
+			tundra[tc[ti]] = true;
+			ti = ti + 1;
+		end
+		local snowCols = GetSnowWrapColumns(iW, y);
+		local ci = 1;
+		while ci <= #snowCols do
+			local x = snowCols[ci];
+			if tundra[x] ~= true and MirrorOwnsPlot(x, y, mirrored, iW) then
 				local plot = Map.GetPlot(x, y);
 				if plot ~= nil and plot:GetPlotType() == PlotTypes.PLOT_MOUNTAIN then
 					table.insert(mtns, plot);
 				end
-				y = y + 1;
 			end
+			ci = ci + 1;
 		end
-		ci = ci + 1;
+		y = y + 1;
 	end
 	local n = #mtns;
 	if n <= 4 then
@@ -9175,15 +9666,15 @@ function AddSnowForests()
 	end
 	local barrierTerrain = BarrierTerrainType(cfg);
 	local iW, iH = Map.GetGridSize();
-	local snowCols = GetSnowWrapColumns(iW);
 	local mirrored = (DEF_MIRRORED == 1);
 	local remaining = {};
 	local y = 0;
 	while y < iH do
+		local snowCols = GetSnowWrapColumns(iW, y);
 		local ci = 1;
 		while ci <= #snowCols do
 			local x = snowCols[ci];
-			if (not mirrored) or (x <= iW * 0.5) then
+			if MirrorOwnsPlot(x, y, mirrored, iW) then
 				local plot = Map.GetPlot(x, y);
 				if plot ~= nil then
 					local plotType = plot:GetPlotType();
@@ -10190,141 +10681,6 @@ function SnakyPlaceForestPeaks(iW, iH, skip, mirrored)
 	print("Snaky forest peaks:", nPlaced);
 end
 ------------------------------------------------------------------------------
-function AddTongueLayout()
-	local cfg = GetBarrierConfig();
-	if cfg == nil or cfg.kind ~= "tongue" then
-		return
-	end
-	WeeveeDbg("AddTongueLayout");
-	local iW, iH = Map.GetGridSize();
-	local skip = FillMireSkip(iW);
-	local mirrored = (DEF_MIRRORED == 1);
-	local nogo = TongueNoGoWidth();
-	local hillD = TongueHillDist();
-	local mtnD = TongueMtnDist();
-	local jDepth = TongueGetJungleDepth();
-	local mtnOps = Map.GetCustomOption(OPT_FRONT_MOUNTAIN);
-	local cliffPct = 72 + 4 * mtnOps;
-	if cliffPct > 96 then
-		cliffPct = 96;
-	end
-	print("Tongue nogo", nogo, "hill", hillD, "mtn", mtnD, "jungle", jDepth);
-	local y = 0;
-	while y < iH do
-		local x = 0;
-		while x < iW do
-			if skip[x] ~= true and MirrorOwnsPlot(x, y, mirrored, iW) then
-				local plot = Map.GetPlot(x, y);
-				if plot ~= nil and plot:IsWater() == false then
-					local d = TongueSignedDist(x, y);
-					if d <= 0 then
-						plot:SetFeatureType(FeatureTypes.NO_FEATURE, -1);
-						plot:SetTerrainType(TerrainTypes.TERRAIN_TUNDRA, false, false);
-						plot:SetPlotType(PlotTypes.PLOT_LAND, false, false);
-					elseif d == hillD then
-						plot:SetFeatureType(FeatureTypes.NO_FEATURE, -1);
-						plot:SetTerrainType(TerrainTypes.TERRAIN_TUNDRA, false, false);
-						if Map.Rand(100, "Tongue Hill Col") < 88 then
-							plot:SetPlotType(PlotTypes.PLOT_HILLS, false, false);
-						else
-							plot:SetPlotType(PlotTypes.PLOT_LAND, false, false);
-						end
-					elseif d == mtnD then
-						plot:SetFeatureType(FeatureTypes.NO_FEATURE, -1);
-						plot:SetTerrainType(TerrainTypes.TERRAIN_PLAINS, false, false);
-						if Map.Rand(100, "Tongue Cliff") < cliffPct then
-							plot:SetPlotType(PlotTypes.PLOT_MOUNTAIN, false, false);
-						else
-							plot:SetPlotType(PlotTypes.PLOT_HILLS, false, false);
-						end
-					else
-						plot:SetFeatureType(FeatureTypes.NO_FEATURE, -1);
-						if plot:GetPlotType() == PlotTypes.PLOT_MOUNTAIN then
-							plot:SetPlotType(PlotTypes.PLOT_LAND, false, false);
-						end
-						local t = plot:GetTerrainType();
-						if t == TerrainTypes.TERRAIN_DESERT or t == TerrainTypes.TERRAIN_SNOW or t == TerrainTypes.TERRAIN_TUNDRA then
-							plot:SetTerrainType(TerrainTypes.TERRAIN_PLAINS, false, false);
-						end
-					end
-				end
-			end
-			x = x + 1;
-		end
-		y = y + 1;
-	end
-	y = 0;
-	while y < iH do
-		local x = 0;
-		while x < iW do
-			if skip[x] ~= true and MirrorOwnsPlot(x, y, mirrored, iW) then
-				local plot = Map.GetPlot(x, y);
-				if plot ~= nil and plot:GetPlotType() == PlotTypes.PLOT_MOUNTAIN and TongueSignedDist(x, y) == mtnD then
-					if Map.Rand(100, "Tongue Cliff Spur") < 22 then
-						local dirs = FrostyHexNeighbors(x, y);
-						local di = 1;
-						while di <= 6 do
-							local nx = x + dirs[di][1];
-							local ny = y + dirs[di][2];
-							local nd = TongueSignedDist(nx, ny);
-							if nd == hillD or nd == 0 then
-								local np = Map.GetPlot(nx, ny);
-								if np ~= nil and np:IsWater() == false then
-									np:SetPlotType(PlotTypes.PLOT_MOUNTAIN, false, false);
-									np:SetFeatureType(FeatureTypes.NO_FEATURE, -1);
-								end
-								break
-							end
-							di = di + 1;
-						end
-					end
-				end
-			end
-			x = x + 1;
-		end
-		y = y + 1;
-	end
-	TongueCopyWestToEast();
-	WeeveeDbg("AddTongueLayout done");
-end
-------------------------------------------------------------------------------
-function AddTongueFeatures()
-	local cfg = GetBarrierConfig();
-	if cfg == nil or cfg.kind ~= "tongue" then
-		return
-	end
-	WeeveeDbg("AddTongueFeatures");
-	local iW, iH = Map.GetGridSize();
-	local skip = FillMireSkip(iW);
-	local mirrored = (DEF_MIRRORED == 1);
-	local mtnD = TongueMtnDist();
-	local jDepth = TongueGetJungleDepth();
-	local forestDepth = 4;
-	local band = {};
-	local y = 0;
-	while y < iH do
-		local x = 0;
-		while x < iW do
-			local i = y * iW + x + 1;
-			band[i] = 0;
-			if skip[x] ~= true and MirrorOwnsPlot(x, y, mirrored, iW) then
-				local plot = Map.GetPlot(x, y);
-				if plot ~= nil and plot:IsWater() == false and plot:GetTerrainType() ~= TerrainTypes.TERRAIN_TUNDRA then
-					local d = TongueSignedDist(x, y);
-					if d > mtnD then
-						band[i] = TongueEconKind(d - mtnD, x, y, jDepth, forestDepth);
-					end
-				end
-			end
-			x = x + 1;
-		end
-		y = y + 1;
-	end
-	EconBandBleed(band, iW, iH, skip, mirrored);
-	PaintEconBands(band, iW, iH, skip, mirrored);
-	TongueCopyWestToEast();
-	WeeveeDbg("AddTongueFeatures done");
-end
 ------------------------------------------------------------------------------
 function SnakyWobble(x, y)
 	if snakyAmp == nil then
@@ -10338,7 +10694,7 @@ function SnakyWobble(x, y)
 end
 ------------------------------------------------------------------------------
 function SnakyTundraWanted(x, y)
-	local d = TongueSignedDist(x, y);
+	local d = TiltedSignedDist(x, y);
 	local nogo = TongueNoGoWidth();
 	local base = nogo * 0.75;
 	if base < 2 then
@@ -10546,7 +10902,7 @@ function AddSnakyLayout()
 			if skip[sx] ~= true then
 				local seed = Map.GetPlot(sx, sy);
 				if seed ~= nil and seed:IsWater() == false and seed:GetTerrainType() == TerrainTypes.TERRAIN_TUNDRA then
-					if TongueSignedDist(sx, sy) > 0 then
+					if TiltedSignedDist(sx, sy) > 0 then
 						local target = 4 + Map.Rand(8, "Snaky Bite Size");
 						local n = 0;
 						local steps = 0;
@@ -10557,7 +10913,7 @@ function AddSnakyLayout()
 							if plot == nil or plot:IsWater() or skip[cx] == true then
 								break
 							end
-							if TongueSignedDist(cx, cy) <= 0 then
+							if TiltedSignedDist(cx, cy) <= 0 then
 								break
 							end
 							if plot:GetTerrainType() == TerrainTypes.TERRAIN_TUNDRA then
@@ -10614,7 +10970,7 @@ function AddSnakyLayout()
 		end
 		y = y + 1;
 	end
-	TongueCopyWestToEast();
+	CopyWestToEast();
 	WeeveeDbg("AddSnakyLayout done");
 end
 ------------------------------------------------------------------------------
@@ -10629,7 +10985,7 @@ function SnakyContactPlotOk(plot, skip, mirrored, iW)
 	if plot:GetTerrainType() == TerrainTypes.TERRAIN_TUNDRA then
 		return false
 	end
-	if TongueSignedDist(x, plot:GetY()) <= 0 then
+	if TiltedSignedDist(x, plot:GetY()) <= 0 then
 		return false
 	end
 	return true
@@ -10703,7 +11059,7 @@ function SnakyPlaceContactMountains(iW, iH, skip, mirrored, dist)
 		while x < iW do
 			local plot = Map.GetPlot(x, y);
 			if plot ~= nil and plot:GetPlotType() == PlotTypes.PLOT_MOUNTAIN then
-				if skip[x] ~= true and MirrorOwnsPlot(x, y, mirrored, iW) and TongueSignedDist(x, y) > 0 then
+				if skip[x] ~= true and MirrorOwnsPlot(x, y, mirrored, iW) and TiltedSignedDist(x, y) > 0 then
 					local d0 = dist[y * iW + x];
 					if d0 ~= nil and d0 <= 1 then
 						local dirs = FrostyHexNeighbors(x, y);
@@ -10870,7 +11226,7 @@ function SnakyCleanupSeparatorPockets(iW, iH, skip, mirrored)
 					local k = y * iW + x;
 					if reached[k] ~= true then
 						plot:SetFeatureType(FeatureTypes.NO_FEATURE, -1);
-						if TongueSignedDist(x, y) <= 0 or SnakyTundraWanted(x, y) then
+						if TiltedSignedDist(x, y) <= 0 or SnakyTundraWanted(x, y) then
 							plot:SetTerrainType(TerrainTypes.TERRAIN_TUNDRA, false, false);
 						else
 							plot:SetTerrainType(TerrainTypes.TERRAIN_PLAINS, false, false);
@@ -11422,7 +11778,7 @@ function AddSnakyFeatures()
 	SnakyPlaceMarshBiome(iW, iH, skip, mirrored, biomeDist);
 	SnakyPlaceDesertBiome(iW, iH, skip, mirrored, biomeDist);
 	SnakyCleanupSeparatorPockets(iW, iH, skip, mirrored);
-	TongueCopyWestToEast();
+	CopyWestToEast();
 	StripSnakySeparatorFeatures();
 	WeeveeDbg("AddSnakyFeatures done");
 end
@@ -15587,13 +15943,13 @@ function StripBarrierResources()
 	local horseID = GameInfoTypes["RESOURCE_HORSE"];
 	local ironID = GameInfoTypes["RESOURCE_IRON"];
 	local iW, iH = Map.GetGridSize();
-	local cols = GetSnowWrapColumns(iW);
 	local n = 0;
-	local ci = 1;
-	while ci <= #cols do
-		local x = cols[ci];
-		local y = 0;
-		while y < iH do
+	local y = 0;
+	while y < iH do
+		local cols = GetSnowWrapColumns(iW, y);
+		local ci = 1;
+		while ci <= #cols do
+			local x = cols[ci];
 			local plot = Map.GetPlot(x, y);
 			if plot ~= nil then
 				local res = plot:GetResourceType(-1);
@@ -15619,11 +15975,11 @@ function StripBarrierResources()
 					end
 				end
 			end
-			y = y + 1;
+			ci = ci + 1;
 		end
-		ci = ci + 1;
+		y = y + 1;
 	end
-	if IsTongue() then
+	if IsSnaky() then
 		local y = 0;
 		while y < iH do
 			local x = 0;
@@ -15760,7 +16116,7 @@ end
 ------------------------------------------------------------------------------
 function PlaceDesertTundraFrontResources()
 	local cfg = GetBarrierConfig();
-	if cfg == nil or cfg.kind == "peaks" or IsTongue() then
+	if cfg == nil or cfg.kind == "peaks" or IsTiltedMirrorAxis() then
 		return
 	end
 	local iW, iH = Map.GetGridSize();
@@ -16812,6 +17168,13 @@ function StartPlotSystem()
 	start_plot_database:BalanceAndAssign()
 	WeeveeDbg("BalanceAndAssign done");
 
+	-- Stabilize final player start positions before natural wonders stamp
+	-- their exclusion ripple, so a wonder never ends up "safe" from a start
+	-- that later gets relocated by these same two calls (they also run again
+	-- at the very end as a safety net for anything terrain work shifts later).
+	ClampPlayerStartsOffEdges();
+	NudgePlayerStartsMinDist(5);
+
 	--print("Placing Natural Wonders.");
 	--start_plot_database:PlaceNaturalWonders()
 
@@ -16869,9 +17232,9 @@ function StartPlotSystem()
 	
 	if IsOldSnow() or IsSnowBarrier() then
 		local iW, iH = Map.GetGridSize()
-		local snowCols = GetSnowWrapColumns(iW);
-		for _, x in ipairs(snowCols) do
-			for y = 0, iH - 1 do
+		for y = 0, iH - 1 do
+			local snowCols = GetSnowWrapColumns(iW, y);
+			for _, x in ipairs(snowCols) do
 				local plot = Map.GetPlot(x, y)
 				if plot ~= nil then
 					plot:SetWOfRiver(false,FlowDirectionTypes.NO_FLOWDIRECTION)
@@ -16880,7 +17243,7 @@ function StartPlotSystem()
 				end
 			end
 		end
-		if IsTongue() then
+		if IsSnaky() then
 			local y = 0;
 			while y < iH do
 				local x = 0;
@@ -16902,7 +17265,6 @@ function StartPlotSystem()
 	CullShortRivers();
 	CullWestCoastShortRivers();
 	PurgeNearStartLakeFish();
-	WeeveeDbgCall("CapSeaResources", CapSeaResources);
 	FixNorthUniqueLuxuries();
 	StripOasisWestSparseLux();
 	EnsureOasisUniqueLuxuries();
@@ -16914,6 +17276,10 @@ function StartPlotSystem()
 	StripStartTileLuxuries();
 	ConvertFlatDesertSaltCopper();
 	StripIllegalMountainResources();
+	-- Runs last, not before the luxury-quota/floor passes above: any of them
+	-- can place a pearls/whale/crab to help hit a target, and a sea-resource
+	-- cap that runs before that can't catch what gets added after it.
+	WeeveeDbgCall("CapSeaResources", CapSeaResources);
 	WeeveeDbg("before mirror");
 	if DEF_MIRRORED == 1 then
 	------------------------------------------------------------------------------
@@ -16930,7 +17296,7 @@ function StartPlotSystem()
 				local mirrorPlot = getMirroredPlot(plot);
 				local skipDest = false;
 				if plot ~= nil and mirrorPlot ~= nil then
-					skipDest = TongueSkipMirrorDest(x, y, mirrorPlot:GetX(), mirrorPlot:GetY());
+					skipDest = TiltedSkipMirrorDest(x, y, mirrorPlot:GetX(), mirrorPlot:GetY());
 				end
 				if skipDest == false and plot ~= nil and mirrorPlot ~= nil then
 				local plotType = plot:GetPlotType();
@@ -16947,7 +17313,7 @@ function StartPlotSystem()
 			end
 		end
 	end
-	TongueCopyHomePastMidToPair(true);
+	TiltedCopyHomePastMidToPair(true);
 	-- rivers
 	-- mirrorize rivers
 	--rivers
@@ -17026,7 +17392,111 @@ function StartPlotSystem()
 	ClampPlayerStartsOffEdges();
 	NudgePlayerStartsMinDist(5);
 	WeeveeDbgCall("FrostyThawStartResources", FrostyThawStartResources);
+	WeeveeDbgCall("WeeveeDbgBarrierWidths", WeeveeDbgBarrierWidths);
+	WeeveeDbgCall("WeeveeDbgWaterCount", WeeveeDbgWaterCount);
 	WeeveeDbg("StartPlotSystem done");
+end
+------------------------------------------------------------------------------
+-- TEMPORARY diagnostic for the water-budget investigation. Counts final salt
+-- water (ocean/coast, explicitly excluding lakes) vs lake tiles, tagged with
+-- the active climate, so results from different climate rolls can be told
+-- apart in weevee_dbg.log. Safe to delete once the water question is settled.
+function WeeveeDbgWaterCount()
+	local iW, iH = Map.GetGridSize();
+	local cfg = GetBarrierConfig();
+	local kind = "nil";
+	if cfg ~= nil then
+		kind = tostring(cfg.kind);
+	end
+	local saltWater = 0;
+	local lakeWater = 0;
+	local land = 0;
+	local y = 0;
+	while y < iH do
+		local x = 0;
+		while x < iW do
+			local plot = Map.GetPlot(x, y);
+			if plot ~= nil then
+				if plot:IsWater() then
+					if plot:IsLake() then
+						lakeWater = lakeWater + 1;
+					else
+						saltWater = saltWater + 1;
+					end
+				else
+					land = land + 1;
+				end
+			end
+			x = x + 1;
+		end
+		y = y + 1;
+	end
+	local total = iW * iH;
+	local line = "WATER COUNT kind=" .. kind .. " iW=" .. iW .. " iH=" .. iH .. " total=" .. total
+		.. " saltWater=" .. saltWater .. " lakeWater=" .. lakeWater .. " land=" .. land
+		.. " saltWaterPct=" .. string.format("%.1f", 100 * saltWater / total);
+	WeeveeDbg(line);
+	WeeveeDbgPersist(line);
+end
+------------------------------------------------------------------------------
+-- TEMPORARY diagnostic for the Standard-Diagonal barrier-width investigation.
+-- Logs the actual final snow-terrain run at each row to weevee_dbg.log. Safe
+-- to delete once the width question is settled.
+function WeeveeDbgBarrierWidths()
+	if IsTiltedMirrorAxis() == false then
+		return
+	end
+	local iW, iH = Map.GetGridSize();
+	local wrapN, centerN = ResolveSnowWrapWidths();
+	WeeveeDbg("BARRIER DIAG iW=" .. iW .. " iH=" .. iH .. " centerN=" .. centerN .. " wrapN=" .. wrapN);
+	local y = 0;
+	while y < iH do
+		local cols = {};
+		local x = 0;
+		while x < iW do
+			local plot = Map.GetPlot(x, y);
+			if plot ~= nil and plot:GetTerrainType() == TerrainTypes.TERRAIN_SNOW then
+				table.insert(cols, x);
+			end
+			x = x + 1;
+		end
+		local line = "row " .. y .. " snow_cols=[";
+		local i = 1;
+		while i <= #cols do
+			line = line .. cols[i];
+			if i < #cols then
+				line = line .. ",";
+			end
+			i = i + 1;
+		end
+		line = line .. "] fold_mid=" .. TiltedFoldMid(y);
+		WeeveeDbg(line);
+		local win = GetSnowWrapColumns(iW, y);
+		local mirrored = (DEF_MIRRORED == 1);
+		local wi = 1;
+		local winLine = "  window: ";
+		while wi <= #win do
+			local wx = win[wi];
+			local owned = MirrorOwnsPlot(wx, y, mirrored, iW);
+			local terrName = "nil";
+			local plot = Map.GetPlot(wx, y);
+			if plot ~= nil then
+				local t = plot:GetTerrainType();
+				if t == TerrainTypes.TERRAIN_SNOW then terrName = "SNOW";
+				elseif t == TerrainTypes.TERRAIN_TUNDRA then terrName = "TUNDRA";
+				elseif t == TerrainTypes.TERRAIN_OCEAN then terrName = "OCEAN";
+				elseif t == TerrainTypes.TERRAIN_COAST then terrName = "COAST";
+				elseif t == TerrainTypes.TERRAIN_GRASS then terrName = "GRASS";
+				elseif t == TerrainTypes.TERRAIN_PLAINS then terrName = "PLAINS";
+				elseif t == TerrainTypes.TERRAIN_DESERT then terrName = "DESERT";
+				else terrName = "OTHER(" .. tostring(t) .. ")"; end
+			end
+			winLine = winLine .. "x=" .. wx .. ":owned=" .. tostring(owned) .. ":" .. terrName .. "  ";
+			wi = wi + 1;
+		end
+		WeeveeDbg(winLine);
+		y = y + 1;
+	end
 end
 ------------------------------------------------------------------------------
 local CoreGenerateMap = GenerateMap;
