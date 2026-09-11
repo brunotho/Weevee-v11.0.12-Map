@@ -93,10 +93,6 @@ local OPT_CENTER_SPLIT = 1;
 local OPT_FRONT_MOUNTAIN = 2;
 local OPT_SNOW_BARRIER = 3;
 local OPT_WRAP = 4;
-local OPT_AVOID_CLIMATES = 5;
-local AVOID_CLIMATES_NONE = 1;
-local AVOID_CLIMATES_WEAK = 2;
-local AVOID_CLIMATES_STRONG = 3;
 local SPLIT_SNOW = 1;
 local SPLIT_SNOW_V2 = 2;
 local SPLIT_WETLAND = 3;
@@ -108,7 +104,7 @@ local SPLIT_TONGUE = 8;
 local SPLIT_SNAKY = 9;
 local SPLIT_RANDOM = 10;
 local BARE_MOUNTAIN_TARGET = 27;
-local SPLIT_MENU_RANDOM = 9;
+local SPLIT_MENU_RANDOM = 1; -- Random's dropdown position
 local WRAP_NO = 1;
 local WRAP_YES = 2;
 local WRAP_RANDOM = 3;
@@ -152,17 +148,17 @@ function GetMapScriptInfo()
 			{
 				Name = "[COLOR_HIGHLIGHT_TEXT]Climate[ENDCOLOR]",
 				Values = {
+					"[COLOR_HIGHLIGHT_TEXT][ICON_CAPITAL] Random[ENDCOLOR]",
 					"[COLOR_HIGHLIGHT_TEXT]Standard[ENDCOLOR]",
+					"[COLOR_HIGHLIGHT_TEXT]Standard - Diagonal[ENDCOLOR]",
 					"[COLOR_HIGHLIGHT_TEXT]Murky[ENDCOLOR]",
 					"[COLOR_HIGHLIGHT_TEXT]Oasis[ENDCOLOR]",
-					"[COLOR_HIGHLIGHT_TEXT]Wasteland (WIP)[ENDCOLOR]",
 					"[COLOR_HIGHLIGHT_TEXT]Peaky[ENDCOLOR]",
 					"[COLOR_HIGHLIGHT_TEXT]Frosty (WIP)[ENDCOLOR]",
-					"[COLOR_HIGHLIGHT_TEXT]Standard - Diagonal[ENDCOLOR]",
 					"[COLOR_HIGHLIGHT_TEXT]Slate (WIP)[ENDCOLOR]",
-					"[COLOR_HIGHLIGHT_TEXT][ICON_CAPITAL] Random[ENDCOLOR]"
+					"[COLOR_HIGHLIGHT_TEXT]Wasteland (WIP)[ENDCOLOR]",
 				},
-				DefaultValue = 9,
+				DefaultValue = 1,
 				SortPriority = -99,
 			},
 			{
@@ -201,16 +197,6 @@ function GetMapScriptInfo()
 				DefaultValue = 1,
 				SortPriority = -96,
 			},
-			{
-				Name = "[COLOR_HIGHLIGHT_TEXT]Avoid Climates[ENDCOLOR]",
-				Values = {
-					"[COLOR_HIGHLIGHT_TEXT][ICON_CAPITAL] None[ENDCOLOR]",
-					"[COLOR_HIGHLIGHT_TEXT]Avoid weak[ENDCOLOR]",
-					"[COLOR_HIGHLIGHT_TEXT]Avoid strong[ENDCOLOR]",
-				},
-				DefaultValue = 1,
-				SortPriority = -95,
-			},
 		},
 	}
 end
@@ -218,6 +204,17 @@ end
 ------------------------------------------------------------------------------
 local barrierSplitResolved = false;
 local barrierSplit = SPLIT_SNOW;
+-- Climate dropdown order (position 1 is always Random, checked separately
+-- below): Random, Standard, Standard-Diagonal, Murky, Oasis, Peaky, Frosty,
+-- Slate, Wasteland. This maps each dropdown position to the SPLIT_ constant
+-- that actually identifies that climate internally -- the two have drifted
+-- apart since the constants were numbered for the dropdown's original order.
+-- Index 1 (Random) is intentionally left unused; that position is handled
+-- before this table is ever consulted.
+local CLIMATE_OPS_TO_SPLIT = {
+	nil, SPLIT_SNOW_V2, SPLIT_TONGUE, SPLIT_WETLAND, SPLIT_DESERT,
+	SPLIT_PEAKS, SPLIT_FROSTY, SPLIT_SNAKY, SPLIT_WASTELAND,
+};
 function ResolveBarrierSplit()
 	if barrierSplitResolved then
 		return barrierSplit;
@@ -225,24 +222,11 @@ function ResolveBarrierSplit()
 	barrierSplitResolved = true;
 	local ops = Map.GetCustomOption(OPT_CENTER_SPLIT);
 	if ops == SPLIT_MENU_RANDOM or ops == SPLIT_RANDOM then
-		local avoid = Map.GetCustomOption(OPT_AVOID_CLIMATES);
-		local pool = {};
-		if avoid ~= AVOID_CLIMATES_STRONG then
-			table.insert(pool, SPLIT_SNOW_V2);
-			table.insert(pool, SPLIT_PEAKS);
-			table.insert(pool, SPLIT_TONGUE); -- Standard - Diagonal
-		end
-		if avoid ~= AVOID_CLIMATES_WEAK then
-			table.insert(pool, SPLIT_WETLAND);
-			table.insert(pool, SPLIT_DESERT);
-		end
-		if #pool < 1 then
-			table.insert(pool, SPLIT_SNOW_V2);
-		end
+		local pool = {SPLIT_SNOW_V2, SPLIT_PEAKS, SPLIT_TONGUE, SPLIT_WETLAND, SPLIT_DESERT};
 		barrierSplit = pool[Map.Rand(#pool, "Barrier Terrain Random") + 1];
-		print("Barrier Terrain random:", barrierSplit, "avoid=", avoid);
+		print("Barrier Terrain random:", barrierSplit);
 	else
-		barrierSplit = ops + 1;
+		barrierSplit = CLIMATE_OPS_TO_SPLIT[ops];
 	end
 	return barrierSplit;
 end
@@ -874,17 +858,28 @@ function TongueIsBarrierPlot(x, y)
 end
 ------------------------------------------------------------------------------
 function PlotRejectsNaturalWonder(x, y)
-	if IsSnaky() == false then
+	if IsTiltedMirrorAxis() == false then
 		return false
 	end
 	local plot = Map.GetPlot(x, y);
 	if plot == nil then
 		return true
 	end
-	if plot:GetTerrainType() == TerrainTypes.TERRAIN_TUNDRA then
+	if IsSnaky() and plot:GetTerrainType() == TerrainTypes.TERRAIN_TUNDRA then
 		return true
 	end
 	if TiltedSignedDist(x, y) <= 0 then
+		-- Applies to every tilted-mirror-axis climate (Snaky and now
+		-- Standard-Diagonal too), not just Snaky: without this, vanilla's
+		-- PlaceNaturalWonders (which scans the whole canvas, unaware of the
+		-- west/east split) is free to independently place wonders on the
+		-- not-yet-generated "away" half as well as the real west half. Those
+		-- get caught by the final mirror pass everywhere the mirror
+		-- destination isn't skipped, but wherever it is skipped (right along
+		-- the wandering diagonal fold), the independently-placed wonder
+		-- survives -- doubling the total count, and occasionally landing
+		-- right next to a real wonder across the fold since the two "halves"
+		-- are geometric neighbors there.
 		return true
 	end
 	return false
@@ -2595,7 +2590,7 @@ function GetMapInitData(worldSize)
 			-- straight (see the Standard-Diagonal width/smoothness investigation).
 			-- Small/Tiny's default height (22) isn't, so pin it to one that is.
 			h = 20;
-			w = w + 4;
+			w = w + 6;
 		end
 		print("Map canvas:", w, "x", h, "(base", grid_size[1], "x", grid_size[2], ")");
 		WeeveeDbg("canvas " .. tostring(w) .. "x" .. tostring(h) .. " wrapX=" .. tostring(IsSnowWrapX()));
@@ -4161,10 +4156,10 @@ function PlaceDiagonalBackWater(plotTypes, iW, iH)
 	-- both), so the final salt water count ends up double whatever this
 	-- function paints on the west side. Track everything in west-side units
 	-- against half the full-map target, not the full target itself. Trimmed
-	-- by 0.5% off the top since the coast itself now covers less height (see
-	-- coastWinH below) and would otherwise just get pushed elsewhere instead
-	-- of actually reduced.
-	local westTarget = math.floor(totalTiles * (pct - 0.5) / 100 / 2);
+	-- by 1% off the top since the coast covers less than the full height
+	-- (see coastWinH below) and would otherwise just get pushed elsewhere
+	-- instead of actually reduced.
+	local westTarget = math.floor(totalTiles * (pct - 1) / 100 / 2);
 
 	local mirrored = (DEF_MIRRORED == 1);
 	local function inlandAllowed(x, y)
@@ -4221,11 +4216,13 @@ function PlaceDiagonalBackWater(plotTypes, iW, iH)
 	local bigSize = 5 + Map.Rand(11, "DiagWater Big Island Size"); -- 5-15
 	local bulgeLen = 4 + Map.Rand(3, "DiagWater Bulge Len"); -- 4-6 rows
 
-	-- The coast itself only covers ~80% of the map's height, not the full
-	-- run -- picked as one contiguous, randomly-positioned window rather than
-	-- spreading the gap out, so there's a real stretch of plain coastline at
-	-- one or both ends instead of touching the back edge everywhere.
-	local coastWinH = math.max(bulgeLen + 4, math.floor(iH * 0.8));
+	-- The coast itself only covers some (60-80%, varies per map) of the
+	-- map's height, not the full run -- picked as one contiguous, randomly-
+	-- positioned window rather than spreading the gap out, so there's a real
+	-- stretch of plain coastline at one or both ends instead of touching the
+	-- back edge everywhere.
+	local coastHeightPct = 60 + Map.Rand(21, "DiagWater Coast Height Pct"); -- 60-80
+	local coastWinH = math.max(bulgeLen + 4, math.floor(iH * coastHeightPct / 100));
 	if coastWinH > iH then
 		coastWinH = iH;
 	end
@@ -4266,9 +4263,17 @@ function PlaceDiagonalBackWater(plotTypes, iW, iH)
 			-- 1-2 tile ocean rim along the whole west border before this
 			-- function ever runs, so it has to be explicitly undone here or
 			-- these rows would still show water regardless of the window.
+			-- Only reclaim tiles that are actually still ocean (the rim) --
+			-- setting the whole x=0..3 strip to flat land unconditionally was
+			-- also erasing any hill/mountain the base tectonics fractal had
+			-- already rolled at x=2/x=3 (outside the rim's real 1-2 tile
+			-- width), leaving this strip noticeably flatter than the rest of
+			-- the mainland.
 			local x = 0;
 			while x <= 3 do
-				setPlot(x, y, PlotTypes.PLOT_LAND);
+				if getPlot(x, y) == PlotTypes.PLOT_OCEAN then
+					setPlot(x, y, PlotTypes.PLOT_LAND);
+				end
 				x = x + 1;
 			end
 		else
@@ -4318,10 +4323,45 @@ function PlaceDiagonalBackWater(plotTypes, iW, iH)
 		si = si + 1;
 	end
 
+	-- A few extra hills tucked into the far west corners -- mirrored
+	-- automatically to the opposite corners via setPlot -- since those
+	-- corners otherwise read noticeably flatter than the rest of the
+	-- mainland.
+	local function addCornerHills(yLo, yHi)
+		local cands = {};
+		local cy = yLo;
+		while cy <= yHi do
+			local cx = 0;
+			while cx <= 5 do
+				if getPlot(cx, cy) == PlotTypes.PLOT_LAND then
+					table.insert(cands, {cx, cy});
+				end
+				cx = cx + 1;
+			end
+			cy = cy + 1;
+		end
+		if #cands < 1 then
+			return
+		end
+		local want = 2 + Map.Rand(2, "DiagWater Corner Hills"); -- 2-3
+		if want > #cands then
+			want = #cands;
+		end
+		local shuffled = GetShuffledCopyOfTable(cands);
+		local i = 1;
+		while i <= want do
+			setPlot(shuffled[i][1], shuffled[i][2], PlotTypes.PLOT_HILLS);
+			i = i + 1;
+		end
+	end
+	addCornerHills(0, 3);
+	addCornerHills(iH - 4, iH - 1);
+
 	local diagLine = "DiagWater: pct=" .. pct .. " westTarget=" .. westTarget .. " inland=" .. nInland
 		.. " usedByInland=" .. usedByInland .. " westBackBudget=" .. westBackBudget
 		.. " bulgeReserve=" .. bulgeReserve .. " bigSize=" .. bigSize .. " smallCount=" .. nSmall
-		.. " iH=" .. iH .. " coastWinY0=" .. coastWinY0 .. " coastWinY1=" .. coastWinY1 .. " coastWinH=" .. coastWinH;
+		.. " iH=" .. iH .. " coastHeightPct=" .. coastHeightPct
+		.. " coastWinY0=" .. coastWinY0 .. " coastWinY1=" .. coastWinY1 .. " coastWinH=" .. coastWinH;
 	print(diagLine);
 	WeeveeDbg(diagLine);
 end
@@ -7439,7 +7479,10 @@ end
 function LuxuryQuotaMet()
 	local counts, nUnique, nDup, nTrip = GatherLuxuryTiers();
 	local wantU, wantD, wantT = ResolveLuxTargets();
-	if IsStandardClimate() then
+	if IsStandardClimate() and IsTiltedMirrorAxis() == false then
+		-- Plain Standard only; Standard-Diagonal opts into the same
+		-- quota-or-reroll enforcement every non-Standard climate already
+		-- gets (see EnsureLuxuryQuota's matching carve-out).
 		return true, nUnique, nDup, nTrip;
 	end
 	return (nUnique >= wantU and nDup >= wantD and nTrip >= wantT), nUnique, nDup, nTrip;
@@ -7589,6 +7632,52 @@ function EnsureLuxuryQuota()
 		end
 		return false
 	end
+	local function tryPlaceForceTriplicate(luxID)
+		-- Non-desert-specific hard fallback for Standard-Diagonal: relax the
+		-- spacing rules progressively, then as a last resort convert a plain
+		-- land plot to hills to open up hill-locked resources. Deliberately
+		-- separate from tryPlaceHard (which stays desert-terrain-specific for
+		-- Oasis) so Oasis's placement behavior is untouched.
+		if tryPlace(luxID, 1, 2) then
+			return true
+		end
+		if tryPlace(luxID, 0, 0) then
+			return true
+		end
+		local cands = {};
+		local y = 0;
+		while y < iH do
+			local x = 0;
+			while x <= maxX do
+				if skip[x] ~= true and nearStart(x, y) == false then
+					local plot = Map.GetPlot(x, y);
+					if plot ~= nil
+						and plot:IsWater() == false
+						and plot:GetPlotType() == PlotTypes.PLOT_LAND
+						and plot:GetResourceType(-1) == -1 then
+						table.insert(cands, plot);
+					end
+				end
+				x = x + 1;
+			end
+			y = y + 1;
+		end
+		if #cands > 1 then
+			cands = GetShuffledCopyOfTable(cands);
+		end
+		local i = 1;
+		while i <= #cands do
+			local plot = cands[i];
+			plot:SetPlotType(PlotTypes.PLOT_HILLS, false, false);
+			if plot:CanHaveResource(luxID) then
+				plot:SetResourceType(luxID, 1);
+				return true
+			end
+			plot:SetPlotType(PlotTypes.PLOT_LAND, false, false);
+			i = i + 1;
+		end
+		return false
+	end
 	local function padTo(needCount, fromCount, targetHave)
 		local counts = GatherLuxuryTiers();
 		local ids = {};
@@ -7674,6 +7763,35 @@ function EnsureLuxuryQuota()
 	end
 	padTo(2, 1, wantD);
 	padTo(3, 2, wantT);
+	if IsStandardClimate() and IsTiltedMirrorAxis() then
+		-- Standard-Diagonal treats a triplicate shortfall as serious: force one
+		-- through with relaxed spacing/terraforming before falling back to a
+		-- full map reroll (GenerateMap retries on LuxuryQuotaMet() == false).
+		local counts2 = GatherLuxuryTiers();
+		local dupIds = {};
+		local id2, n2;
+		for id2, n2 in pairs(counts2) do
+			if n2 == 2 and banned[id2] ~= true then
+				table.insert(dupIds, id2);
+			end
+		end
+		if #dupIds > 1 then
+			dupIds = GetShuffledCopyOfTable(dupIds);
+		end
+		local haveT = 0;
+		for id2, n2 in pairs(counts2) do
+			if n2 >= 3 then
+				haveT = haveT + 1;
+			end
+		end
+		local fi = 1;
+		while haveT < wantT and fi <= #dupIds do
+			if tryPlaceForceTriplicate(dupIds[fi]) then
+				haveT = haveT + 1;
+			end
+			fi = fi + 1;
+		end
+	end
 	local ok, u, d, t = LuxuryQuotaMet();
 	print("Luxury quota pad:", u, "/", wantU, "unique", d, "/", wantD, "dup", t, "/", wantT, "trip", "ok", tostring(ok));
 	return ok
@@ -15125,21 +15243,55 @@ end
 ------------------------------------------------------------------------------
 function ForestMountainsToBareTarget()
 	local iW, iH = Map.GetGridSize();
-	local skip = FillMireSkip(iW);
-	local mirrored = (DEF_MIRRORED == 1);
-	local bareWant = BARE_MOUNTAIN_TARGET;
-	if DEF_MIRRORED == 1 then
-		bareWant = math.floor((BARE_MOUNTAIN_TARGET + 1) / 2);
+	local tilted = IsTiltedMirrorAxis();
+	-- This rule is entirely pre-mirror by design: count every mountain that
+	-- exists on the whole canvas right now (both what will end up west and
+	-- east -- pre-mirror the two sides aren't actually symmetric yet, since
+	-- most of the map comes from the base tectonics fractal running once
+	-- over the full width with no left/right symmetry), decide forest/bare
+	-- against the real BARE_MOUNTAIN_TARGET cap directly against that true
+	-- total, and only afterward does the normal end-of-generation mirror
+	-- pass run (elsewhere, much later) and copy west over east as always --
+	-- unrelated to this rule. Deliberately NOT restricted to
+	-- MirrorOwnsPlot's west-only half.
+	--
+	-- Non-tilted climates (Standard, Oasis, Murky, Peaky, ...) keep the exact
+	-- prior flat skip lookup, computed once. Tilted climates (Standard-Diagonal)
+	-- need a per-row skip, since the barrier's column position drifts with the
+	-- diagonal fold and FillMireSkip's flat (row-unaware) columns miscount
+	-- mountains near the barrier. Scoped to this function only, not FillMireSkip
+	-- itself, so the many other non-tilted-only callers of FillMireSkip are
+	-- untouched.
+	local staticSkip = nil;
+	if tilted == false then
+		staticSkip = FillMireSkip(iW);
 	end
+	local bareWant = BARE_MOUNTAIN_TARGET;
 	if bareWant < 1 then
 		bareWant = 1;
 	end
 	local mtns = {};
 	local y = 0;
 	while y < iH do
+		local skip = staticSkip;
+		if tilted then
+			skip = {};
+			local cols = GetSnowWrapColumns(iW, y);
+			local ci = 1;
+			while ci <= #cols do
+				skip[cols[ci]] = true;
+				ci = ci + 1;
+			end
+			cols = GetSnowWrapTundraColumns(iW, y);
+			ci = 1;
+			while ci <= #cols do
+				skip[cols[ci]] = true;
+				ci = ci + 1;
+			end
+		end
 		local x = 0;
 		while x < iW do
-			if skip[x] ~= true and MirrorOwnsPlot(x, y, mirrored, iW) then
+			if skip[x] ~= true then
 				local plot = Map.GetPlot(x, y);
 				if plot ~= nil and plot:GetPlotType() == PlotTypes.PLOT_MOUNTAIN and PlotHasNaturalWonder(plot) ~= true then
 					table.insert(mtns, plot);
@@ -15160,21 +15312,44 @@ function ForestMountainsToBareTarget()
 	if nMtn > 1 then
 		mtns = GetShuffledCopyOfTable(mtns);
 	end
+	local nSetForest = 0;
+	local nSetJungle = 0;
 	local i = 1;
 	while i <= nMtn do
 		local plot = mtns[i];
 		if i <= nForest then
-			if plot:GetFeatureType() ~= FeatureTypes.FEATURE_FOREST then
-				plot:SetFeatureType(FeatureTypes.FEATURE_FOREST, -1);
+			local wantFeat = FeatureTypes.FEATURE_FOREST;
+			if HexNearFeature(plot:GetX(), plot:GetY(), FeatureTypes.FEATURE_JUNGLE, 1) then
+				wantFeat = FeatureTypes.FEATURE_JUNGLE;
+			end
+			if plot:GetFeatureType() ~= wantFeat then
+				plot:SetFeatureType(wantFeat, -1);
+			end
+			if wantFeat == FeatureTypes.FEATURE_JUNGLE then
+				nSetJungle = nSetJungle + 1;
+			else
+				nSetForest = nSetForest + 1;
 			end
 		else
-			if plot:GetFeatureType() == FeatureTypes.FEATURE_FOREST then
+			local feat = plot:GetFeatureType();
+			if feat == FeatureTypes.FEATURE_FOREST or feat == FeatureTypes.FEATURE_JUNGLE then
 				plot:SetFeatureType(FeatureTypes.NO_FEATURE, -1);
 			end
 		end
 		i = i + 1;
 	end
-	print("Mountain forest:", nForest, "forested bare:", bareWant, "of", nMtn);
+	-- nMtn/bareWant/nForest are the true pre-mirror totals (whole canvas,
+	-- both sides, before the later mirror pass overwrites east with west) --
+	-- directly comparable to BARE_MOUNTAIN_TARGET, no halving/doubling. Note
+	-- this pre-mirror total can still shift post-mirror, since mirroring
+	-- overwrites whatever was independently on the east with west's copy;
+	-- this rule only guarantees the cap against what it can see right now.
+	local diagLine = "Mountain forest: pre-mirror mtn=" .. nMtn .. " bare=" .. bareWant .. " forested=" .. nForest
+		.. " (forest=" .. nSetForest .. " jungle=" .. nSetJungle .. ")"
+		.. " cap=" .. BARE_MOUNTAIN_TARGET;
+	print(diagLine);
+	WeeveeDbg(diagLine);
+	WeeveeDbgPersist(diagLine);
 end
 ------------------------------------------------------------------------------
 function AddPeaksMassifForests()
