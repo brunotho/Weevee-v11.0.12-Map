@@ -12,7 +12,7 @@ include("DEFMultilayeredFractalW");
 include("DEFFeatureGeneratorW");
 include("DEFTerrainGeneratorW");
 
-print("Weevee Map 11.0.11 script loaded");
+print("Weevee Map 11.0.12 script loaded");
 
 local weeveeDbgHandle = nil;
 local WEEVEE_DBG_PATHS = {
@@ -87,7 +87,7 @@ function WeeveeDbgCall(name, fn, a1, a2, a3, a4, a5)
 		WeeveeDbg("ERR " .. name .. " " .. tostring(err));
 	end
 end
-WeeveeDbg("script loaded 11.0.11");
+WeeveeDbg("script loaded 11.0.12");
 
 local OPT_CENTER_SPLIT = 1;
 local OPT_FRONT_MOUNTAIN = 2;
@@ -139,7 +139,7 @@ end
 ------------------------------------------------------------------------------
 function GetMapScriptInfo()
 	return {
-		Name = "[COLOR_HIGHLIGHT_TEXT] Weevee Map 11.0.11 [ENDCOLOR]",
+		Name = "[COLOR_HIGHLIGHT_TEXT] Weevee Map 11.0.12 [ENDCOLOR]",
 		Description = "",
 		IsAdvancedMap = false,
 		SupportsMultiplayer = true,
@@ -17064,19 +17064,27 @@ end
 -- verify every marsh/floodplains tile is still legal once everything else
 -- is done and drop the ones that aren't. CanHaveFeature is the same check
 -- the engine itself uses to place these, so a still-valid tile is untouched.
+-- NOTE: CvPlot::canHaveFeature returns false unconditionally whenever the
+-- plot already has ANY feature (checked before terrain legality), so it must
+-- never be called while the feature-under-test is still set on the plot --
+-- clear it first, then restore if the tile is still legal.
 function StripInvalidWetFeatures()
 	local nMarsh = 0;
 	local nFlood = 0;
 	for i, plot in Plots() do
 		local feat = plot:GetFeatureType();
 		if feat == FeatureTypes.FEATURE_MARSH then
-			if plot:CanHaveFeature(FeatureTypes.FEATURE_MARSH) == false then
-				plot:SetFeatureType(FeatureTypes.NO_FEATURE, -1);
+			plot:SetFeatureType(FeatureTypes.NO_FEATURE, -1);
+			if plot:CanHaveFeature(FeatureTypes.FEATURE_MARSH) then
+				plot:SetFeatureType(FeatureTypes.FEATURE_MARSH, -1);
+			else
 				nMarsh = nMarsh + 1;
 			end
 		elseif feat == FeatureTypes.FEATURE_FLOOD_PLAINS then
-			if plot:CanHaveFeature(FeatureTypes.FEATURE_FLOOD_PLAINS) == false then
-				plot:SetFeatureType(FeatureTypes.NO_FEATURE, -1);
+			plot:SetFeatureType(FeatureTypes.NO_FEATURE, -1);
+			if plot:CanHaveFeature(FeatureTypes.FEATURE_FLOOD_PLAINS) then
+				plot:SetFeatureType(FeatureTypes.FEATURE_FLOOD_PLAINS, -1);
+			else
 				nFlood = nFlood + 1;
 			end
 		end
