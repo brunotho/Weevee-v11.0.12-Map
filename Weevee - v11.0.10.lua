@@ -1789,7 +1789,7 @@ function FrostyFixSnowStarts()
 		local player = Players[i];
 		if player ~= nil and player:IsAlive() and player:GetStartingPlot() ~= nil then
 			local plot = player:GetStartingPlot();
-			if FrostyTileOnSnow(plot) then
+			if IsMirrorEastSubject(plot:GetX(), plot:GetY()) == false and FrostyTileOnSnow(plot) then
 				local px = plot:GetX();
 				local py = plot:GetY();
 				local x0 = 0;
@@ -1846,46 +1846,48 @@ function FrostyThawStartResources()
 			local sp = player:GetStartingPlot();
 			local sx = sp:GetX();
 			local sy = sp:GetY();
-			local y = 0;
-			while y < iH do
-				local x = 0;
-				while x < iW do
-					local dx = x - sx;
-					if dx < 0 then
-						dx = 0 - dx;
-					end
-					if dx <= 3 and Map.PlotDistance(sx, sy, x, y) <= 3 then
-						local plot = Map.GetPlot(x, y);
-						if plot ~= nil and plot:IsWater() == false then
-							local t = plot:GetTerrainType();
-							if t == TerrainTypes.TERRAIN_SNOW then
-								local nGrass = CountAdjacentTerrain(plot, TerrainTypes.TERRAIN_GRASS);
-								local nPlains = CountAdjacentTerrain(plot, TerrainTypes.TERRAIN_PLAINS);
-								local nSnow = CountAdjacentTerrain(plot, TerrainTypes.TERRAIN_SNOW);
-								if nSnow >= 1 and (nGrass + nPlains) < 4 then
-									local res = plot:GetResourceType(-1);
-									if res ~= nil and res ~= -1 then
-										local usage = Game.GetResourceUsageType(res);
-										local thaw = false;
-										if usage == ResourceUsageTypes.RESOURCEUSAGE_LUXURY or usage == ResourceUsageTypes.RESOURCEUSAGE_STRATEGIC then
-											thaw = true;
-										elseif usage == ResourceUsageTypes.RESOURCEUSAGE_BONUS then
-											if plot:GetFeatureType() ~= FeatureTypes.FEATURE_FOREST then
+			if IsMirrorEastSubject(sx, sy) == false then
+				local y = 0;
+				while y < iH do
+					local x = 0;
+					while x < iW do
+						local dx = x - sx;
+						if dx < 0 then
+							dx = 0 - dx;
+						end
+						if dx <= 3 and Map.PlotDistance(sx, sy, x, y) <= 3 then
+							local plot = Map.GetPlot(x, y);
+							if plot ~= nil and plot:IsWater() == false then
+								local t = plot:GetTerrainType();
+								if t == TerrainTypes.TERRAIN_SNOW then
+									local nGrass = CountAdjacentTerrain(plot, TerrainTypes.TERRAIN_GRASS);
+									local nPlains = CountAdjacentTerrain(plot, TerrainTypes.TERRAIN_PLAINS);
+									local nSnow = CountAdjacentTerrain(plot, TerrainTypes.TERRAIN_SNOW);
+									if nSnow >= 1 and (nGrass + nPlains) < 4 then
+										local res = plot:GetResourceType(-1);
+										if res ~= nil and res ~= -1 then
+											local usage = Game.GetResourceUsageType(res);
+											local thaw = false;
+											if usage == ResourceUsageTypes.RESOURCEUSAGE_LUXURY or usage == ResourceUsageTypes.RESOURCEUSAGE_STRATEGIC then
 												thaw = true;
+											elseif usage == ResourceUsageTypes.RESOURCEUSAGE_BONUS then
+												if plot:GetFeatureType() ~= FeatureTypes.FEATURE_FOREST then
+													thaw = true;
+												end
 											end
-										end
-										if thaw then
-											plot:SetTerrainType(TerrainTypes.TERRAIN_TUNDRA, false, false);
-											n = n + 1;
+											if thaw then
+												plot:SetTerrainType(TerrainTypes.TERRAIN_TUNDRA, false, false);
+												n = n + 1;
+											end
 										end
 									end
 								end
 							end
 						end
+						x = x + 1;
 					end
-					x = x + 1;
+					y = y + 1;
 				end
-				y = y + 1;
 			end
 		end
 		i = i + 1;
@@ -1971,7 +1973,7 @@ function StripNonBonusStartTileResources()
 		local player = Players[i];
 		if player ~= nil and player:IsAlive() then
 			local plot = player:GetStartingPlot();
-			if plot ~= nil then
+			if plot ~= nil and IsMirrorEastSubject(plot:GetX(), plot:GetY()) == false then
 				local resID = plot:GetResourceType(-1);
 				if resID ~= -1 and Game.GetResourceUsageType(resID) ~= ResourceUsageTypes.RESOURCEUSAGE_BONUS then
 					plot:SetResourceType(-1);
@@ -2052,6 +2054,64 @@ function OasisStartOk(x, y)
 		d = d + 1;
 	end
 	return nNonDesert >= 2;
+end
+------------------------------------------------------------------------------
+-- Mirror symmetry must be absolute: nothing may independently move or mutate
+-- a plot/start on the non-canonical (east) side after generation -- the only
+-- thing ever allowed to determine east's final state is the west-to-east
+-- copy pass (MirrorPlotsAfterResourcePlacement/getMirroredPlot). These three
+-- helpers let every late "safety net" pass (edge/tongue clamping, min-dist
+-- nudging, Frosty snow-start fixups, start-tile resource/terrain cleanup)
+-- restrict itself to west-side subjects only, while still reasoning
+-- correctly about spacing against where east's mirrored partners will end
+-- up once the copy runs.
+function IsMirrorEastSubject(x, y)
+	if DEF_MIRRORED ~= 1 then
+		return false
+	end
+	local iW = Map.GetGridSize();
+	return MirrorOwnsPlot(x, y, true, iW) == false;
+end
+------------------------------------------------------------------------------
+function MirroredXY(x, y)
+	local iW, iH = Map.GetGridSize();
+	return iW - x - 1, iH - y - 1;
+end
+------------------------------------------------------------------------------
+-- Builds the "others" list for a west-side subject (player index excludeIndex)
+-- as every other currently-west-positioned player's real position, plus the
+-- future mirror-image position of every west-positioned player (including
+-- the subject's own east partner) -- i.e. every real final position on the
+-- map except the subject itself. Stale/raw east-side positions (not yet
+-- synced to their west partner's mirror image) are never used directly, so
+-- spacing decisions never depend on data the final copy is about to discard.
+-- On non-mirrored maps this just returns every other alive player, unchanged.
+function GatherMirrorAwareOthers(excludeIndex)
+	local nMaj = 22;
+	if GameDefines ~= nil and GameDefines.MAX_MAJOR_CIVS ~= nil then
+		nMaj = GameDefines.MAX_MAJOR_CIVS;
+	end
+	local mirrored = (DEF_MIRRORED == 1);
+	local others = {};
+	local j = 0;
+	while j < nMaj do
+		local p = Players[j];
+		if p ~= nil and p:IsAlive() and p:GetStartingPlot() ~= nil then
+			local px = p:GetStartingPlot():GetX();
+			local py = p:GetStartingPlot():GetY();
+			if IsMirrorEastSubject(px, py) == false then
+				if j ~= excludeIndex then
+					table.insert(others, {px, py});
+				end
+				if mirrored then
+					local mx, my = MirroredXY(px, py);
+					table.insert(others, {mx, my});
+				end
+			end
+		end
+		j = j + 1;
+	end
+	return others;
 end
 ------------------------------------------------------------------------------
 function StartMinDistToList(x, y, others)
@@ -2188,7 +2248,7 @@ end
 local weeveeStartDistFail = false;
 function EnforceMinStartDistance(asp, minDist)
 	if minDist == nil then
-		minDist = 5;
+		minDist = 7;
 	end
 	if asp == nil or asp.startingPlots == nil then
 		return
@@ -2250,7 +2310,7 @@ end
 ------------------------------------------------------------------------------
 function NudgePlayerStartsMinDist(minDist)
 	if minDist == nil then
-		minDist = 5;
+		minDist = 7;
 	end
 	local nMaj = 22;
 	if GameDefines ~= nil and GameDefines.MAX_MAJOR_CIVS ~= nil then
@@ -2265,23 +2325,15 @@ function NudgePlayerStartsMinDist(minDist)
 			if player ~= nil and player:IsAlive() and player:GetStartingPlot() ~= nil then
 				local sx = player:GetStartingPlot():GetX();
 				local sy = player:GetStartingPlot():GetY();
-				local others = {};
-				local j = 0;
-				while j < nMaj do
-					if j ~= i then
-						local op = Players[j];
-						if op ~= nil and op:IsAlive() and op:GetStartingPlot() ~= nil then
-							table.insert(others, {op:GetStartingPlot():GetX(), op:GetStartingPlot():GetY()});
+				if IsMirrorEastSubject(sx, sy) == false then
+					local others = GatherMirrorAwareOthers(i);
+					if StartMinDistToList(sx, sy, others) < minDist then
+						local nx, ny = FindNearestStartOffEdge(sx, sy, others, minDist);
+						if nx ~= nil and StartMinDistToList(nx, ny, others) >= minDist then
+							player:SetStartingPlot(Map.GetPlot(nx, ny));
+							print("Player start min-dist", i, "from", sx, sy, "to", nx, ny);
+							moved = true;
 						end
-					end
-					j = j + 1;
-				end
-				if StartMinDistToList(sx, sy, others) < minDist then
-					local nx, ny = FindNearestStartOffEdge(sx, sy, others, minDist);
-					if nx ~= nil and StartMinDistToList(nx, ny, others) >= minDist then
-						player:SetStartingPlot(Map.GetPlot(nx, ny));
-						print("Player start min-dist", i, "from", sx, sy, "to", nx, ny);
-						moved = true;
 					end
 				end
 			end
@@ -2296,20 +2348,14 @@ function NudgePlayerStartsMinDist(minDist)
 	while i < nMaj do
 		local player = Players[i];
 		if player ~= nil and player:IsAlive() and player:GetStartingPlot() ~= nil then
-			local others = {};
-			local j = 0;
-			while j < nMaj do
-				if j ~= i then
-					local op = Players[j];
-					if op ~= nil and op:IsAlive() and op:GetStartingPlot() ~= nil then
-						table.insert(others, {op:GetStartingPlot():GetX(), op:GetStartingPlot():GetY()});
-					end
+			local sx = player:GetStartingPlot():GetX();
+			local sy = player:GetStartingPlot():GetY();
+			if IsMirrorEastSubject(sx, sy) == false then
+				local others = GatherMirrorAwareOthers(i);
+				if StartMinDistToList(sx, sy, others) < minDist then
+					weeveeStartDistFail = true;
+					print("Player start min-dist still failed", i);
 				end
-				j = j + 1;
-			end
-			if StartMinDistToList(player:GetStartingPlot():GetX(), player:GetStartingPlot():GetY(), others) < minDist then
-				weeveeStartDistFail = true;
-				print("Player start min-dist still failed", i);
 			end
 		end
 		i = i + 1;
@@ -2373,22 +2419,14 @@ function ClampPlayerStartsOffEdges()
 			local plot = player:GetStartingPlot();
 			local sx = plot:GetX();
 			local sy = plot:GetY();
-			if StartYAllowed(sy, iH) == false or TongueStartTooClose(sx, sy) or OasisStartOk(sx, sy) == false or SaltWaterWithin(sx, sy, 1) then
-				local others = {};
-				local j = 0;
-				while j < nMaj do
-					if j ~= i then
-						local op = Players[j];
-						if op ~= nil and op:IsAlive() and op:GetStartingPlot() ~= nil then
-							table.insert(others, {op:GetStartingPlot():GetX(), op:GetStartingPlot():GetY()});
-						end
+			if IsMirrorEastSubject(sx, sy) == false then
+				if StartYAllowed(sy, iH) == false or TongueStartTooClose(sx, sy) or OasisStartOk(sx, sy) == false or SaltWaterWithin(sx, sy, 1) then
+					local others = GatherMirrorAwareOthers(i);
+					local nx, ny = FindNearestStartOffEdge(sx, sy, others);
+					if nx ~= nil then
+						player:SetStartingPlot(Map.GetPlot(nx, ny));
+						print("Player start moved off edge/tongue", i, "from", sx, sy, "to", nx, ny);
 					end
-					j = j + 1;
-				end
-				local nx, ny = FindNearestStartOffEdge(sx, sy, others);
-				if nx ~= nil then
-					player:SetStartingPlot(Map.GetPlot(nx, ny));
-					print("Player start moved off edge/tongue", i, "from", sx, sy, "to", nx, ny);
 				end
 			end
 		end
@@ -5276,6 +5314,50 @@ function EnsureStartHillsFloor()
 		pi = pi + 1;
 	end
 end
+-------------------------------------------------------------------------------
+-- Cosmetic extra relief for plain Standard only: the far west edge (the
+-- three columns nearest the map border, x=0..2) tends to read as visually
+-- flat/empty compared to the rest of the continent, so sprinkle a handful of
+-- random hills into it. Runs pre-resource-placement (so PlaceResourcesAndCityStates
+-- and every later resource pass see the final terrain) and, like everything
+-- else in this file that mutates terrain, well before the west-to-east mirror
+-- copy -- it never needs its own mirror-awareness since columns 0-2 are always
+-- deep inside the canonical west half.
+function AddStandardWestEdgeHills()
+	if IsStandardClimate() == false or IsTiltedMirrorAxis() then
+		return
+	end
+	local iW, iH = Map.GetGridSize();
+	local cands = {};
+	local y = 0;
+	while y < iH do
+		local x = 0;
+		while x <= 2 do
+			local plot = Map.GetPlot(x, y);
+			if plot ~= nil and PlotCanBecomeHills(plot) then
+				table.insert(cands, plot);
+			end
+			x = x + 1;
+		end
+		y = y + 1;
+	end
+	if #cands < 1 then
+		return
+	end
+	if #cands > 1 then
+		cands = GetShuffledCopyOfTable(cands);
+	end
+	local want = 4 + Map.Rand(3, "Standard west edge hills count");
+	local n = 0;
+	local i = 1;
+	while i <= #cands and n < want do
+		if TryConvertPlotToHills(cands[i]) then
+			n = n + 1;
+		end
+		i = i + 1;
+	end
+	print("Standard west edge hills painted:", n, "/", want);
+end
 ------------------------------------------------------------------------------
 function PurgeNearStartLakeFish()
 	if IsSnowBarrier() == false then
@@ -7566,12 +7648,6 @@ end
 function LuxuryQuotaMet()
 	local counts, nUnique, nDup, nTrip = GatherLuxuryTiers();
 	local wantU, wantD, wantT = ResolveLuxTargets();
-	if IsStandardClimate() and IsTiltedMirrorAxis() == false then
-		-- Plain Standard only; Standard-Diagonal opts into the same
-		-- quota-or-reroll enforcement every non-Standard climate already
-		-- gets (see EnsureLuxuryQuota's matching carve-out).
-		return true, nUnique, nDup, nTrip;
-	end
 	return (nUnique >= wantU and nDup >= wantD and nTrip >= wantT), nUnique, nDup, nTrip;
 end
 ------------------------------------------------------------------------------
@@ -7812,10 +7888,13 @@ function EnsureLuxuryQuota()
 			end
 			ui = ui + 1;
 		end
-	elseif (IsStandardClimate() == false or IsTiltedMirrorAxis()) and nUnique < wantU then
-		-- Standard-Diagonal opts into the fuller randomized target (like every
-		-- non-Standard climate) instead of plain Standard's floor-only padding,
-		-- since it's a much smaller map and needs the extra effort to get there.
+	elseif nUnique < wantU then
+		-- Every non-Oasis climate, plain Standard included, reaches for the
+		-- same randomized ideal target (LUX_MIN_UNIQUE..LUX_MAX_UNIQUE)
+		-- instead of Standard settling for the bare floor -- Standard no
+		-- longer gets a floor-only carve-out (see LuxuryQuotaMet's matching
+		-- removal of its own Standard exemption, so a Standard roll that
+		-- falls short now rerolls the whole map like every other climate).
 		local unused = {};
 		for res in GameInfo.Resources() do
 			if IsWeeveeLuxuryID(res.ID) and counts[res.ID] == nil and banned[res.ID] ~= true then
@@ -7827,23 +7906,6 @@ function EnsureLuxuryQuota()
 		end
 		local ui = 1;
 		while nUnique < wantU and ui <= #unused do
-			if tryPlace(unused[ui], 3, 5) or tryPlace(unused[ui], 2, 4) then
-				nUnique = nUnique + 1;
-			end
-			ui = ui + 1;
-		end
-	elseif nUnique < LUX_MIN_UNIQUE then
-		local unused = {};
-		for res in GameInfo.Resources() do
-			if IsWeeveeLuxuryID(res.ID) and counts[res.ID] == nil and banned[res.ID] ~= true then
-				table.insert(unused, res.ID);
-			end
-		end
-		if #unused > 1 then
-			unused = GetShuffledCopyOfTable(unused);
-		end
-		local ui = 1;
-		while nUnique < LUX_MIN_UNIQUE and ui <= #unused do
 			if tryPlace(unused[ui], 3, 5) or tryPlace(unused[ui], 2, 4) then
 				nUnique = nUnique + 1;
 			end
@@ -17463,145 +17525,40 @@ function isValidPlayer(pPlayer)
 	return  pPlayer ~= nil and pPlayer:GetStartingPlot() ~= nil and pPlayer:IsAlive();
 end
 ------------------------------------------------------------------------------
-function StartPlotSystem()
-	WeeveeDbg("StartPlotSystem");
-	local res = DEF_RESOURCES;
-	if res == 9 then
-		res = 1 + Map.Rand(3, "Random Resources Option - Lua");
-	end
-
-	WeeveeDbg("Create start db");
-	local start_plot_database = AssignStartingPlots.Create()
-	WeeveeDbg("GenerateRegions");
-	start_plot_database:GenerateRegions()
-	WeeveeDbg("SetDivide");
-	SetDivide()
-	WeeveeDbg("ChooseLocations");
-	start_plot_database:ChooseLocations()
-	WeeveeDbg("ChooseLocations done");
-	PeakEnsureStartHills(start_plot_database);
-	ClampAspStartsOffEdges(start_plot_database);
-	OasisSpreadStarts(start_plot_database);
-	EnforceMinStartDistance(start_plot_database, 5);
-	WeeveeDbg("BalanceAndAssign");
-	start_plot_database:BalanceAndAssign()
-	WeeveeDbg("BalanceAndAssign done");
-
-	-- Stabilize final player start positions before natural wonders stamp
-	-- their exclusion ripple, so a wonder never ends up "safe" from a start
-	-- that later gets relocated by these same two calls (they also run again
-	-- at the very end as a safety net for anything terrain work shifts later).
-	ClampPlayerStartsOffEdges();
-	NudgePlayerStartsMinDist(5);
-
-	--print("Placing Natural Wonders.");
-	--start_plot_database:PlaceNaturalWonders()
-
-	print("Placing Natural Wonders.");
-	local wonders = DEF_NATURAL_WONDERS
-	if wonders == 16 then
-		wonders = 2 + Map.Rand(4, "Number of Wonders 2-5 - Lua");
-	elseif wonders == 14 then
-		wonders = Map.Rand(13, "Number of Wonders To Spawn - Lua");
-	else
-		wonders = wonders - 1;
-	end
-
-	print("########## Wonders ##########");
-	print("Natural Wonders To Place: ", wonders);
-
-	local wonderargs = {
-		wonderamt = wonders,
-	};
-
-	WeeveeDbg("PlaceNaturalWonders");
-	start_plot_database:PlaceNaturalWonders(wonderargs)
-	StripSeparatorNaturalWonders();
-	MaybePlaceFujiHorses(start_plot_database);
-	EnsureStartHillsFloor();
-	WeeveeDbg("PlaceResources");
-	AddWastelandWaterLayout();
-	FixWastelandFloodPlains();
-	AddWastelandTundraForests();
-	start_plot_database:PlaceResourcesAndCityStates();
-	WeeveeDbg("PlaceResources done");
-	MaybePlaceStartTileResource(start_plot_database);
-
-	PlaceOasisForcedHorses();
-	PlaceDesertTundraFrontResources();
-	PlaceDesertMainlandResourceBoost();
-	PlaceOasisFrontColumnExtras();
-	PlaceMurkTundraSheepStone();
-	PlaceMurkWheatAndMarshStone();
-	PlaceMurkSnowStoneIron();
-	PlaceFrostySnowStoneIron();
-	PlacePeaksPlainsCattle();
-	PlaceWastelandTundraWheatSheep();
-	StripBarrierResources();
-	WastelandMiningLuxFlatTundraToHill();
-	start_plot_database:AddForestToResource();
-	WastelandTundraStartHillForest(start_plot_database);
-	AddSnowForests();
-	StripOasisBarrierForests();
-	StripSnakySeparatorFeatures();
-	ForestTundraSeparatorResources();
-	AddBarrierOases();
-	AddWastelandFallout();
-	AddWetlandBarrierFeatures();
-	
-	if IsOldSnow() or IsSnowBarrier() then
-		local iW, iH = Map.GetGridSize()
-		for y = 0, iH - 1 do
-			local snowCols = GetSnowWrapColumns(iW, y);
-			for _, x in ipairs(snowCols) do
-				local plot = Map.GetPlot(x, y)
-				if plot ~= nil then
-					plot:SetWOfRiver(false,FlowDirectionTypes.NO_FLOWDIRECTION)
-					plot:SetNWOfRiver(false,FlowDirectionTypes.NO_FLOWDIRECTION)
-					plot:SetNEOfRiver(false,FlowDirectionTypes.NO_FLOWDIRECTION)
-				end
+function ClearRiversNearBarrier()
+	local iW, iH = Map.GetGridSize()
+	for y = 0, iH - 1 do
+		local snowCols = GetSnowWrapColumns(iW, y);
+		for _, x in ipairs(snowCols) do
+			local plot = Map.GetPlot(x, y)
+			if plot ~= nil then
+				plot:SetWOfRiver(false,FlowDirectionTypes.NO_FLOWDIRECTION)
+				plot:SetNWOfRiver(false,FlowDirectionTypes.NO_FLOWDIRECTION)
+				plot:SetNEOfRiver(false,FlowDirectionTypes.NO_FLOWDIRECTION)
 			end
 		end
-		if IsSnaky() then
-			local y = 0;
-			while y < iH do
-				local x = 0;
-				while x < iW do
-					if TongueIsBarrierPlot(x, y) then
-						local plot = Map.GetPlot(x, y);
-						if plot ~= nil then
-							plot:SetWOfRiver(false,FlowDirectionTypes.NO_FLOWDIRECTION)
-							plot:SetNWOfRiver(false,FlowDirectionTypes.NO_FLOWDIRECTION)
-							plot:SetNEOfRiver(false,FlowDirectionTypes.NO_FLOWDIRECTION)
-						end
+	end
+	if IsSnaky() then
+		local y = 0;
+		while y < iH do
+			local x = 0;
+			while x < iW do
+				if TongueIsBarrierPlot(x, y) then
+					local plot = Map.GetPlot(x, y);
+					if plot ~= nil then
+						plot:SetWOfRiver(false,FlowDirectionTypes.NO_FLOWDIRECTION)
+						plot:SetNWOfRiver(false,FlowDirectionTypes.NO_FLOWDIRECTION)
+						plot:SetNEOfRiver(false,FlowDirectionTypes.NO_FLOWDIRECTION)
 					end
-					x = x + 1;
 				end
-				y = y + 1;
+				x = x + 1;
 			end
+			y = y + 1;
 		end
 	end
-	WeeveeDbgCall("CullShortRivers", CullShortRivers);
-	WeeveeDbgCall("CullWestCoastShortRivers", CullWestCoastShortRivers);
-	PurgeNearStartLakeFish();
-	FixNorthUniqueLuxuries();
-	StripOasisWestSparseLux();
-	EnsureOasisUniqueLuxuries();
-	WeeveeDbgCall("ThinOasisCoastalLuxuries", ThinOasisCoastalLuxuries);
-	EnsureMajorIronHills();
-	StripFrostySnowSparseLux();
-	WeeveeDbgCall("EnsureLuxuryQuota", EnsureLuxuryQuota);
-	EnsureStartLuxuryFloor();
-	StripStartTileLuxuries();
-	ConvertFlatDesertSaltCopper();
-	StripIllegalMountainResources();
-	WeeveeDbgCall("StripInvalidWetFeatures", StripInvalidWetFeatures);
-	-- Runs last, not before the luxury-quota/floor passes above: any of them
-	-- can place a pearls/whale/crab to help hit a target, and a sea-resource
-	-- cap that runs before that can't catch what gets added after it.
-	WeeveeDbgCall("CapSeaResources", CapSeaResources);
-	WeeveeDbg("before mirror");
-	if DEF_MIRRORED == 1 then
+end
+------------------------------------------------------------------------------
+function MirrorPlotsAfterResourcePlacement()
 	------------------------------------------------------------------------------
 	----------------------- INCLUDE getMirroredPlot()-----------------------------
 	----------------- Copyright 2010  (c)  Leszek Deska --------------------------
@@ -17704,15 +17661,135 @@ function StartPlotSystem()
 			end
 		end
 	end
-		Map:RecalculateAreas();
-		Game.SetOption(1, true);
-	
+	Map:RecalculateAreas();
+	Game.SetOption(1, true);
+end
+------------------------------------------------------------------------------
+function StartPlotSystem()
+	WeeveeDbg("StartPlotSystem");
+	local res = DEF_RESOURCES;
+	if res == 9 then
+		res = 1 + Map.Rand(3, "Random Resources Option - Lua");
 	end
+
+	WeeveeDbg("Create start db");
+	local start_plot_database = AssignStartingPlots.Create()
+	WeeveeDbg("GenerateRegions");
+	start_plot_database:GenerateRegions()
+	WeeveeDbg("SetDivide");
+	SetDivide()
+	WeeveeDbg("ChooseLocations");
+	start_plot_database:ChooseLocations()
+	WeeveeDbg("ChooseLocations done");
+	WeeveeDbgCall("PeakEnsureStartHills", function() PeakEnsureStartHills(start_plot_database) end);
+	WeeveeDbgCall("ClampAspStartsOffEdges", function() ClampAspStartsOffEdges(start_plot_database) end);
+	WeeveeDbgCall("OasisSpreadStarts", function() OasisSpreadStarts(start_plot_database) end);
+	WeeveeDbgCall("EnforceMinStartDistance", function() EnforceMinStartDistance(start_plot_database, 7) end);
+	WeeveeDbg("BalanceAndAssign");
+	start_plot_database:BalanceAndAssign()
+	WeeveeDbg("BalanceAndAssign done");
+
+	-- Stabilize final player start positions before natural wonders stamp
+	-- their exclusion ripple, so a wonder never ends up "safe" from a start
+	-- that later gets relocated by these same two calls (they also run again
+	-- at the very end as a safety net for anything terrain work shifts later).
+	WeeveeDbgCall("ClampPlayerStartsOffEdges", ClampPlayerStartsOffEdges);
+	WeeveeDbgCall("NudgePlayerStartsMinDist", function() NudgePlayerStartsMinDist(7) end);
+
+	--print("Placing Natural Wonders.");
+	--start_plot_database:PlaceNaturalWonders()
+
+	print("Placing Natural Wonders.");
+	local wonders = DEF_NATURAL_WONDERS
+	if wonders == 16 then
+		wonders = 2 + Map.Rand(4, "Number of Wonders 2-5 - Lua");
+	elseif wonders == 14 then
+		wonders = Map.Rand(13, "Number of Wonders To Spawn - Lua");
+	else
+		wonders = wonders - 1;
+	end
+
+	print("########## Wonders ##########");
+	print("Natural Wonders To Place: ", wonders);
+
+	local wonderargs = {
+		wonderamt = wonders,
+	};
+
+	WeeveeDbg("PlaceNaturalWonders");
+	WeeveeDbgCall("PlaceNaturalWonders", function() start_plot_database:PlaceNaturalWonders(wonderargs) end);
+	WeeveeDbgCall("StripSeparatorNaturalWonders", StripSeparatorNaturalWonders);
+	WeeveeDbgCall("MaybePlaceFujiHorses", function() MaybePlaceFujiHorses(start_plot_database) end);
+	WeeveeDbgCall("EnsureStartHillsFloor", EnsureStartHillsFloor);
+	WeeveeDbgCall("AddStandardWestEdgeHills", AddStandardWestEdgeHills);
+	WeeveeDbg("PlaceResources");
+	WeeveeDbgCall("AddWastelandWaterLayout", AddWastelandWaterLayout);
+	WeeveeDbgCall("FixWastelandFloodPlains", FixWastelandFloodPlains);
+	WeeveeDbgCall("AddWastelandTundraForests", AddWastelandTundraForests);
+	WeeveeDbgCall("PlaceResourcesAndCityStates", function() start_plot_database:PlaceResourcesAndCityStates() end);
+	WeeveeDbg("PlaceResources done");
+	WeeveeDbgCall("MaybePlaceStartTileResource", function() MaybePlaceStartTileResource(start_plot_database) end);
+
+	WeeveeDbgCall("PlaceOasisForcedHorses", PlaceOasisForcedHorses);
+	WeeveeDbgCall("PlaceDesertTundraFrontResources", PlaceDesertTundraFrontResources);
+	WeeveeDbgCall("PlaceDesertMainlandResourceBoost", PlaceDesertMainlandResourceBoost);
+	WeeveeDbgCall("PlaceOasisFrontColumnExtras", PlaceOasisFrontColumnExtras);
+	WeeveeDbgCall("PlaceMurkTundraSheepStone", PlaceMurkTundraSheepStone);
+	WeeveeDbgCall("PlaceMurkWheatAndMarshStone", PlaceMurkWheatAndMarshStone);
+	WeeveeDbgCall("PlaceMurkSnowStoneIron", PlaceMurkSnowStoneIron);
+	WeeveeDbgCall("PlaceFrostySnowStoneIron", PlaceFrostySnowStoneIron);
+	WeeveeDbgCall("PlacePeaksPlainsCattle", PlacePeaksPlainsCattle);
+	WeeveeDbgCall("PlaceWastelandTundraWheatSheep", PlaceWastelandTundraWheatSheep);
+	WeeveeDbgCall("StripBarrierResources", StripBarrierResources);
+	WeeveeDbgCall("WastelandMiningLuxFlatTundraToHill", WastelandMiningLuxFlatTundraToHill);
+	WeeveeDbgCall("AddForestToResource", function() start_plot_database:AddForestToResource() end);
+	WeeveeDbgCall("WastelandTundraStartHillForest", function() WastelandTundraStartHillForest(start_plot_database) end);
+	WeeveeDbgCall("AddSnowForests", AddSnowForests);
+	WeeveeDbgCall("StripOasisBarrierForests", StripOasisBarrierForests);
+	WeeveeDbgCall("StripSnakySeparatorFeatures", StripSnakySeparatorFeatures);
+	WeeveeDbgCall("ForestTundraSeparatorResources", ForestTundraSeparatorResources);
+	WeeveeDbgCall("AddBarrierOases", AddBarrierOases);
+	WeeveeDbgCall("AddWastelandFallout", AddWastelandFallout);
+	WeeveeDbgCall("AddWetlandBarrierFeatures", AddWetlandBarrierFeatures);
+	
+	if IsOldSnow() or IsSnowBarrier() then
+		WeeveeDbgCall("ClearRiversNearBarrier", ClearRiversNearBarrier);
+	end
+	WeeveeDbgCall("CullShortRivers", CullShortRivers);
+	WeeveeDbgCall("CullWestCoastShortRivers", CullWestCoastShortRivers);
+	WeeveeDbgCall("PurgeNearStartLakeFish", PurgeNearStartLakeFish);
+	WeeveeDbgCall("FixNorthUniqueLuxuries", FixNorthUniqueLuxuries);
+	WeeveeDbgCall("StripOasisWestSparseLux", StripOasisWestSparseLux);
+	WeeveeDbgCall("EnsureOasisUniqueLuxuries", EnsureOasisUniqueLuxuries);
+	WeeveeDbgCall("ThinOasisCoastalLuxuries", ThinOasisCoastalLuxuries);
+	WeeveeDbgCall("EnsureMajorIronHills", EnsureMajorIronHills);
+	WeeveeDbgCall("StripFrostySnowSparseLux", StripFrostySnowSparseLux);
+	WeeveeDbgCall("EnsureLuxuryQuota", EnsureLuxuryQuota);
+	WeeveeDbgCall("EnsureStartLuxuryFloor", EnsureStartLuxuryFloor);
+	WeeveeDbgCall("StripStartTileLuxuries", StripStartTileLuxuries);
+	WeeveeDbgCall("ConvertFlatDesertSaltCopper", ConvertFlatDesertSaltCopper);
+	WeeveeDbgCall("StripIllegalMountainResources", StripIllegalMountainResources);
+	WeeveeDbgCall("StripInvalidWetFeatures", StripInvalidWetFeatures);
+	-- Runs last, not before the luxury-quota/floor passes above: any of them
+	-- can place a pearls/whale/crab to help hit a target, and a sea-resource
+	-- cap that runs before that can't catch what gets added after it.
+	WeeveeDbgCall("CapSeaResources", CapSeaResources);
+	-- Everything below that can still move a start or edit a plot is confined
+	-- to the west/canonical side only (IsMirrorEastSubject gates every one of
+	-- them) and must run BEFORE the mirror copy, never after -- the copy is
+	-- the single, sole source of truth for the east side's terrain, resources
+	-- and start positions, and must therefore be the very last mutating step.
+	-- This guarantees byte-for-byte mirror symmetry: nothing downstream ever
+	-- computes anything for the east half independently again.
 	WeeveeDbgCall("FrostyFixSnowStarts", FrostyFixSnowStarts);
-	ClampPlayerStartsOffEdges();
-	NudgePlayerStartsMinDist(5);
+	WeeveeDbgCall("ClampPlayerStartsOffEdges", ClampPlayerStartsOffEdges);
+	WeeveeDbgCall("NudgePlayerStartsMinDist", function() NudgePlayerStartsMinDist(7) end);
 	WeeveeDbgCall("StripNonBonusStartTileResources", StripNonBonusStartTileResources);
 	WeeveeDbgCall("FrostyThawStartResources", FrostyThawStartResources);
+	WeeveeDbg("before mirror");
+	if DEF_MIRRORED == 1 then
+		WeeveeDbgCall("MirrorPlotsAfterResourcePlacement", MirrorPlotsAfterResourcePlacement);
+	end
 	WeeveeDbgCall("WeeveeDbgBarrierWidths", WeeveeDbgBarrierWidths);
 	WeeveeDbgCall("WeeveeDbgWaterCount", WeeveeDbgWaterCount);
 	WeeveeDbg("StartPlotSystem done");
@@ -17834,7 +17911,7 @@ function GenerateMap()
 		local ok, nUnique, nDup, nTrip = LuxuryQuotaMet();
 		local wantU, wantD, wantT = ResolveLuxTargets();
 		if weeveeStartDistFail then
-			print("Start min-dist 5 rejected");
+			print("Start min-dist 7 rejected");
 		end
 		if ok and weeveeStartDistFail ~= true then
 			print("Luxury quota accepted unique", nUnique, "/", wantU, "dup", nDup, "/", wantD, "trip", nTrip, "/", wantT);
