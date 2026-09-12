@@ -1947,6 +1947,43 @@ function MaybePlaceStartTileResource(asp)
 	end
 end
 ------------------------------------------------------------------------------
+-- The global rule is: a start plot may share a tile with a bonus resource
+-- (MaybePlaceStartTileResource above even does this deliberately), but never
+-- with a strategic or luxury resource. That rule is enforced correctly at
+-- placement time -- against wherever each start plot is *then*. What isn't
+-- covered: ClampPlayerStartsOffEdges/NudgePlayerStartsMinDist run again as a
+-- late safety net (after Natural Wonders, all resources, and the mirror
+-- copy) to fix a start that ended up too close to another or off a climate
+-- edge, and FindNearestStartOffEdge's candidate search has no idea what
+-- resources already sit on a candidate tile. On a tight map (Standard-
+-- Diagonal's small canvas plus a chunky diagonal barrier eating playable
+-- space) this late relocation fires more often, so it's the one path that
+-- can hand a player a final start tile still carrying a strategic/luxury
+-- resource nobody ever re-checked. Run last, once starts are truly final.
+function StripNonBonusStartTileResources()
+	local nMaj = 22;
+	if GameDefines ~= nil and GameDefines.MAX_MAJOR_CIVS ~= nil then
+		nMaj = GameDefines.MAX_MAJOR_CIVS;
+	end
+	local n = 0;
+	local i = 0;
+	while i < nMaj do
+		local player = Players[i];
+		if player ~= nil and player:IsAlive() then
+			local plot = player:GetStartingPlot();
+			if plot ~= nil then
+				local resID = plot:GetResourceType(-1);
+				if resID ~= -1 and Game.GetResourceUsageType(resID) ~= ResourceUsageTypes.RESOURCEUSAGE_BONUS then
+					plot:SetResourceType(-1);
+					n = n + 1;
+				end
+			end
+		end
+		i = i + 1;
+	end
+	print("Non-bonus resources stripped off final start tiles:", n);
+end
+------------------------------------------------------------------------------
 local MIN_START_LANDMASS = 6;
 local START_EDGE_MIN = 4;
 function StartYAllowed(y, iH)
@@ -2662,11 +2699,37 @@ function ResetWeeveeMapAttempt()
 	for y = 0, iH - 1 do
 		for x = 0, iW - 1 do
 			local plot = Map.GetPlot(x, y);
-			if plot ~= nil and plot:GetResourceType(-1) ~= -1 then
-				plot:SetResourceType(-1);
+			if plot ~= nil then
+				if plot:GetResourceType(-1) ~= -1 then
+					plot:SetResourceType(-1);
+				end
+				-- Only resources were cleared here before, so a discarded
+				-- attempt's features -- most visibly Natural Wonders, since
+				-- GeneratePlotTypes/GenerateTerrain repaint plot type/terrain
+				-- fresh every attempt but nothing repaints features -- survived
+				-- untouched into the next attempt and stacked with whatever it
+				-- placed, doubling (or tripling, one per retry) the final count.
+				if plot:GetFeatureType() ~= FeatureTypes.NO_FEATURE then
+					plot:SetFeatureType(FeatureTypes.NO_FEATURE, -1);
+				end
+				if plot:IsWOfRiver() or plot:IsNWOfRiver() or plot:IsNEOfRiver() then
+					plot:SetWOfRiver(false, FlowDirectionTypes.NO_FLOWDIRECTION);
+					plot:SetNWOfRiver(false, FlowDirectionTypes.NO_FLOWDIRECTION);
+					plot:SetNEOfRiver(false, FlowDirectionTypes.NO_FLOWDIRECTION);
+				end
+				-- AddGoodies (huts) runs once per attempt too, same accumulation risk.
+				if plot:GetImprovementType() ~= -1 then
+					plot:SetImprovementType(-1);
+				end
 			end
 		end
 	end
+	-- DEFMapGeneratorW8's own river bookkeeping (_rivers, keyed by plot,
+	-- tracking which riverID already claimed it) is a global set up once at
+	-- script load, not reset per AddRivers() call -- unlike riverEdgeList,
+	-- which AddRivers already re-inits itself. Left alone it would carry a
+	-- discarded attempt's claims into the next attempt's DoRiver() calls.
+	_rivers = {};
 	saltPlanResolved = false;
 	snowWrapWidthResolved = false;
 	climateScaleResolved = false;
@@ -4863,7 +4926,7 @@ function FixKailashGibraltarAdjacency(wtype)
 end
 ------------------------------------------------------------------------------
 function StripSeparatorNaturalWonders()
-	if IsSnaky() == false then
+	if IsTiltedMirrorAxis() == false then
 		return
 	end
 	local nwFeat = {};
@@ -6464,10 +6527,34 @@ function AddLakes()
 	local numLakesAdded = 0;
 	local iW = Map.GetGridSize();
 	local lakePlotRand = 80;
+	-- AddLakes runs after AddRivers (rivers must be carved first, or DoRiver's
+	-- own IsWater() checks would make them stop short of the coast at the
+	-- first lake -- see the ordering comment on GenerateMap). That means a
+	-- river's flow was already committed without knowing this plot would
+	-- become a lake, so a river edge landing right on a new lake's shore
+	-- never actually terminates "into" it, it just runs alongside. Rather
+	-- than reorder (which would truncate rivers map-wide) or try to re-stitch
+	-- the river afterward, simply never place a lake next to one: checking
+	-- only the candidate's own IsRiver() missed a river edge owned by a
+	-- neighbor, so check the ring too.
+	local function nearRiver(plot)
+		if plot:IsRiver() then
+			return true
+		end
+		local d = 0;
+		while d < DirectionTypes.NUM_DIRECTION_TYPES do
+			local adj = PlotDirNoXWrap(plot:GetX(), plot:GetY(), d);
+			if adj ~= nil and adj:IsRiver() then
+				return true
+			end
+			d = d + 1;
+		end
+		return false
+	end
 	for i, plot in Plots() do
 		if not plot:IsWater() then
 			if not plot:IsCoastalLand() then
-				if not plot:IsRiver() then
+				if not nearRiver(plot) then
 					local bandRand = lakePlotRand;
 					local bi = plot:GetY() * iW + plot:GetX() + 1;
 					if mireBand[bi] ~= 3 then
@@ -7494,7 +7581,6 @@ function EnsureLuxuryQuota()
 	banned[GameInfoTypes["RESOURCE_PORCELAIN"] or -2] = true;
 	local iW, iH = Map.GetGridSize();
 	local maxX = LuxuryPlayableMaxX(iW);
-	local skip = FillMireSkip(iW);
 	local starts = {};
 	local pi = 0;
 	while pi < GameDefines.MAX_MAJOR_CIVS do
@@ -7545,6 +7631,7 @@ function EnsureLuxuryQuota()
 		local cands = {};
 		local y = 0;
 		while y < iH do
+			local skip = RowMireSkip(iW, y);
 			local x = 0;
 			while x <= maxX do
 				if skip[x] ~= true and nearStart(x, y) == false then
@@ -7580,6 +7667,7 @@ function EnsureLuxuryQuota()
 		local cands = {};
 		local y = 0;
 		while y < iH do
+			local skip = RowMireSkip(iW, y);
 			local x = 0;
 			while x <= maxX do
 				if skip[x] ~= true and nearStart(x, y) == false then
@@ -7647,6 +7735,7 @@ function EnsureLuxuryQuota()
 		local cands = {};
 		local y = 0;
 		while y < iH do
+			local skip = RowMireSkip(iW, y);
 			local x = 0;
 			while x <= maxX do
 				if skip[x] ~= true and nearStart(x, y) == false then
@@ -8543,10 +8632,12 @@ function RiverEdgesTouchWater(edges)
 end
 ------------------------------------------------------------------------------
 function CullShortRivers()
-	local cfg = GetBarrierConfig();
-	if cfg == nil or cfg.kind ~= "peaks" then
-		return
-	end
+	-- Was Peaks-only, but the thing it does -- delete a river stub that
+	-- never reaches any water, instead of leaving it to fizzle out on land
+	-- -- isn't Peaks-specific at all: DoRiver's walk (see its own comments)
+	-- has no guarantee of reaching water on any climate, it's just more
+	-- visible on a small map like Standard-Diagonal's. Generalized to run
+	-- everywhere rather than inventing a second copy of the same logic.
 	local nDrop = 0;
 	local rid, edges;
 	for rid, edges in pairs(riverEdgeList) do
@@ -8559,7 +8650,7 @@ function CullShortRivers()
 			end
 			i = i + 1;
 		end
-		if n > 0 and n < 4 and RiverEdgesTouchWater(edges) == false then
+		if n > 0 and n <= 5 and RiverEdgesTouchWater(edges) == false then
 			i = 1;
 			while i <= #edges do
 				local e = edges[i];
@@ -8569,7 +8660,7 @@ function CullShortRivers()
 			nDrop = nDrop + 1;
 		end
 	end
-	print("Peaks short rivers dropped:", nDrop);
+	print("Dead-end short rivers dropped:", nDrop);
 end
 ------------------------------------------------------------------------------
 function CullWestCoastShortRivers()
@@ -9923,6 +10014,30 @@ function FillMireSkip(iW)
 		ci = ci + 1;
 	end
 	cols = GetSnowWrapTundraColumns(iW);
+	ci = 1;
+	while ci <= #cols do
+		skip[cols[ci]] = true;
+		ci = ci + 1;
+	end
+	return skip;
+end
+------------------------------------------------------------------------------
+-- Row-aware sibling of FillMireSkip: on a tilted-mirror-axis climate the
+-- barrier column set moves per row (see TiltedFoldMid), so a caller that
+-- checks candidate plots row-by-row should use this instead of the flat
+-- FillMireSkip mask, which is pinned to the constant vertical-line position
+-- and misses the true barrier on every row the fold has drifted away from
+-- center. Not swapped into FillMireSkip's ~40 existing callers wholesale
+-- (unaudited blast radius); use directly in new/fixed per-row call sites.
+function RowMireSkip(iW, y)
+	local skip = {};
+	local cols = GetSnowWrapColumns(iW, y);
+	local ci = 1;
+	while ci <= #cols do
+		skip[cols[ci]] = true;
+		ci = ci + 1;
+	end
+	cols = GetSnowWrapTundraColumns(iW, y);
 	ci = 1;
 	while ci <= #cols do
 		skip[cols[ci]] = true;
@@ -16877,7 +16992,36 @@ function StripIllegalMountainResources()
 	end
 	print("Stripped mountain resources:", n);
 end
-------------------------------------------------------------------------------
+-------------------------------------------------------------------------------
+-- Late safety net (pre-mirror): a handful of barrier-relief passes (snow
+-- peak/hill carving, mountain capping, etc.) run after AddFeatures and
+-- mutate plot type/terrain without checking for a feature that's no longer
+-- legal there afterward -- e.g. a marsh whose tile just became hills, or a
+-- floodplains whose tile's terrain just got repainted away from desert/
+-- plains. Rather than chase every such upstream pass individually, just
+-- verify every marsh/floodplains tile is still legal once everything else
+-- is done and drop the ones that aren't. CanHaveFeature is the same check
+-- the engine itself uses to place these, so a still-valid tile is untouched.
+function StripInvalidWetFeatures()
+	local nMarsh = 0;
+	local nFlood = 0;
+	for i, plot in Plots() do
+		local feat = plot:GetFeatureType();
+		if feat == FeatureTypes.FEATURE_MARSH then
+			if plot:CanHaveFeature(FeatureTypes.FEATURE_MARSH) == false then
+				plot:SetFeatureType(FeatureTypes.NO_FEATURE, -1);
+				nMarsh = nMarsh + 1;
+			end
+		elseif feat == FeatureTypes.FEATURE_FLOOD_PLAINS then
+			if plot:CanHaveFeature(FeatureTypes.FEATURE_FLOOD_PLAINS) == false then
+				plot:SetFeatureType(FeatureTypes.NO_FEATURE, -1);
+				nFlood = nFlood + 1;
+			end
+		end
+	end
+	print("Invalid wet features stripped: marsh=", nMarsh, " floodplains=", nFlood);
+end
+-------------------------------------------------------------------------------
 function PlaceWastelandTundraWheatSheep()
 	local cfg = GetBarrierConfig();
 	if cfg == nil or cfg.kind ~= "wasteland" then
@@ -17437,8 +17581,8 @@ function StartPlotSystem()
 			end
 		end
 	end
-	CullShortRivers();
-	CullWestCoastShortRivers();
+	WeeveeDbgCall("CullShortRivers", CullShortRivers);
+	WeeveeDbgCall("CullWestCoastShortRivers", CullWestCoastShortRivers);
 	PurgeNearStartLakeFish();
 	FixNorthUniqueLuxuries();
 	StripOasisWestSparseLux();
@@ -17446,11 +17590,12 @@ function StartPlotSystem()
 	WeeveeDbgCall("ThinOasisCoastalLuxuries", ThinOasisCoastalLuxuries);
 	EnsureMajorIronHills();
 	StripFrostySnowSparseLux();
-	EnsureLuxuryQuota();
+	WeeveeDbgCall("EnsureLuxuryQuota", EnsureLuxuryQuota);
 	EnsureStartLuxuryFloor();
 	StripStartTileLuxuries();
 	ConvertFlatDesertSaltCopper();
 	StripIllegalMountainResources();
+	WeeveeDbgCall("StripInvalidWetFeatures", StripInvalidWetFeatures);
 	-- Runs last, not before the luxury-quota/floor passes above: any of them
 	-- can place a pearls/whale/crab to help hit a target, and a sea-resource
 	-- cap that runs before that can't catch what gets added after it.
@@ -17566,6 +17711,7 @@ function StartPlotSystem()
 	WeeveeDbgCall("FrostyFixSnowStarts", FrostyFixSnowStarts);
 	ClampPlayerStartsOffEdges();
 	NudgePlayerStartsMinDist(5);
+	WeeveeDbgCall("StripNonBonusStartTileResources", StripNonBonusStartTileResources);
 	WeeveeDbgCall("FrostyThawStartResources", FrostyThawStartResources);
 	WeeveeDbgCall("WeeveeDbgBarrierWidths", WeeveeDbgBarrierWidths);
 	WeeveeDbgCall("WeeveeDbgWaterCount", WeeveeDbgWaterCount);
