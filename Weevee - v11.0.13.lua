@@ -12,7 +12,7 @@ include("DEFMultilayeredFractalW");
 include("DEFFeatureGeneratorW");
 include("DEFTerrainGeneratorW");
 
-print("Weevee Map 11.0.12 script loaded");
+print("Weevee Map 11.0.13 script loaded");
 
 local weeveeDbgHandle = nil;
 local WEEVEE_DBG_PATHS = {
@@ -87,7 +87,7 @@ function WeeveeDbgCall(name, fn, a1, a2, a3, a4, a5)
 		WeeveeDbg("ERR " .. name .. " " .. tostring(err));
 	end
 end
-WeeveeDbg("script loaded 11.0.12");
+WeeveeDbg("script loaded 11.0.13");
 
 local OPT_CENTER_SPLIT = 1;
 local OPT_SNOW_BARRIER = 2;
@@ -151,7 +151,7 @@ end
 ------------------------------------------------------------------------------
 function GetMapScriptInfo()
 	return {
-		Name = "[COLOR_HIGHLIGHT_TEXT] Weevee Map 11.0.12 [ENDCOLOR]",
+		Name = "[COLOR_HIGHLIGHT_TEXT] Weevee Map 11.0.13 [ENDCOLOR]",
 		Description = "",
 		IsAdvancedMap = false,
 		SupportsMultiplayer = true,
