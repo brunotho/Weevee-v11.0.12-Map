@@ -90,9 +90,21 @@ end
 WeeveeDbg("script loaded 11.0.12");
 
 local OPT_CENTER_SPLIT = 1;
-local OPT_FRONT_MOUNTAIN = 2;
-local OPT_SNOW_BARRIER = 3;
-local OPT_WRAP = 4;
+local OPT_SNOW_BARRIER = 2;
+local OPT_WRAP = 3;
+-- Frozen value of the former "Front Mountain %" custom option (was the
+-- default, 25%) now that the option itself has been removed.
+local FRONT_MOUNTAIN_DENSITY = 0.25;
+-- Per-side mountain budget for the column-weighted front ridge design.
+-- Mirrored automatically to the other front.
+local FRONT_MOUNTAIN_BUDGET = 12;
+-- Kept separate from FRONT_MOUNTAIN_BUDGET in case Standard-Diagonal needs
+-- to diverge again later (it reads busier at the same budget, since its
+-- ridges trace the fold instead of a straight column).
+local FRONT_MOUNTAIN_BUDGET_DIAGONAL = 12;
+-- No contiguous mountain blob touching the front ridges may exceed this
+-- many tiles, counting merges with mountains from the normal terrain pass.
+local FRONT_MOUNTAIN_CLUMP_CAP = 5;
 local SPLIT_SNOW = 1;
 local SPLIT_SNOW_V2 = 2;
 local SPLIT_WETLAND = 3;
@@ -162,20 +174,6 @@ function GetMapScriptInfo()
 				SortPriority = -99,
 			},
 			{
-				Name = "[COLOR_HIGHLIGHT_TEXT]Front Mountain %[ENDCOLOR]",
-				Values = {
-					"[COLOR_HIGHLIGHT_TEXT]20%[ENDCOLOR]",
-					"[COLOR_HIGHLIGHT_TEXT][ICON_CAPITAL] 25%[ENDCOLOR]",
-					"[COLOR_HIGHLIGHT_TEXT]30%[ENDCOLOR]",
-					"[COLOR_HIGHLIGHT_TEXT]35%[ENDCOLOR]",
-					"[COLOR_HIGHLIGHT_TEXT]40%[ENDCOLOR]",
-					"[COLOR_HIGHLIGHT_TEXT]45%[ENDCOLOR]",
-					"[COLOR_HIGHLIGHT_TEXT]50%[ENDCOLOR]",
-				},
-				DefaultValue = 2,
-				SortPriority = -98,
-			},
-			{
 				Name = "[COLOR_HIGHLIGHT_TEXT]Barrier Width[ENDCOLOR]",
 				Values = {
 					"[COLOR_HIGHLIGHT_TEXT]0[ENDCOLOR]",
@@ -185,7 +183,7 @@ function GetMapScriptInfo()
 					"[COLOR_HIGHLIGHT_TEXT]Random (2-6)[ENDCOLOR]",
 				},
 				DefaultValue = 3,
-				SortPriority = -97,
+				SortPriority = -98,
 			},
 			{
 				Name = "[COLOR_HIGHLIGHT_TEXT]World Wrap[ENDCOLOR]",
@@ -195,7 +193,7 @@ function GetMapScriptInfo()
 					"[COLOR_HIGHLIGHT_TEXT]Random[ENDCOLOR]",
 				},
 				DefaultValue = 1,
-				SortPriority = -96,
+				SortPriority = -97,
 			},
 		},
 	}
@@ -265,6 +263,9 @@ function GetBarrierConfig()
 			iceLakePermille = 0,
 			forestPct = 14,
 			oasisPctOfFlat = 0,
+			-- Standard's front mountains use their own column-weighted ridge
+			-- design (see the front-mountain dispatch below), not the
+			-- generic chaotic ridge.
 			chaoticMountains = false,
 		};
 	end
@@ -304,7 +305,11 @@ function GetBarrierConfig()
 			iceLakePermille = 0,
 			forestPct = 0,
 			oasisPctOfFlat = 0,
-			chaoticMountains = true,
+			-- Murky's front mountains use the column-weighted ridge design
+			-- (see the front-mountain dispatch below), not the generic
+			-- chaotic ridge, so it gets the narrower default foothill band
+			-- to match (see chaoticMountains' other use sites).
+			chaoticMountains = false,
 			marshBarrierPct = 28,
 			jungleBarrierPct = 0,
 			forestBarrierPct = 22,
@@ -1998,6 +2003,7 @@ function StartYAllowed(y, iH)
 	return y >= START_EDGE_MIN and y < iH - START_EDGE_MIN;
 end
 ------------------------------------------------------------------------------
+local START_MIN_SALT_WATER_DIST = 3;
 function SaltWaterWithin(x, y, maxD)
 	if x == nil or y == nil then
 		return false
@@ -2172,7 +2178,7 @@ function FindNearestStartOffEdge(sx, sy, others, minSep)
 					if ok and OasisStartOk(x, y) == false then
 						ok = false;
 					end
-					if ok and SaltWaterWithin(x, y, 1) then
+					if ok and SaltWaterWithin(x, y, START_MIN_SALT_WATER_DIST) then
 						ok = false;
 					end
 					if ok then
@@ -2383,7 +2389,7 @@ function ClampAspStartsOffEdges(asp)
 			if OasisStartOk(sx, sy) == false then
 				needMove = true;
 			end
-			if SaltWaterWithin(sx, sy, 1) then
+			if SaltWaterWithin(sx, sy, START_MIN_SALT_WATER_DIST) then
 				needMove = true;
 			end
 			if needMove then
@@ -2420,7 +2426,7 @@ function ClampPlayerStartsOffEdges()
 			local sx = plot:GetX();
 			local sy = plot:GetY();
 			if IsMirrorEastSubject(sx, sy) == false then
-				if StartYAllowed(sy, iH) == false or TongueStartTooClose(sx, sy) or OasisStartOk(sx, sy) == false or SaltWaterWithin(sx, sy, 1) then
+				if StartYAllowed(sy, iH) == false or TongueStartTooClose(sx, sy) or OasisStartOk(sx, sy) == false or SaltWaterWithin(sx, sy, START_MIN_SALT_WATER_DIST) then
 					local others = GatherMirrorAwareOthers(i);
 					local nx, ny = FindNearestStartOffEdge(sx, sy, others);
 					if nx ~= nil then
@@ -3456,6 +3462,211 @@ function PlaceMirroredMountain(plotTypes, iW, iH, x, y)
 	local my = iH - y - 1;
 	plotTypes[my * iW + mx + 1] = PlotTypes.PLOT_MOUNTAIN;
 	return true
+end
+------------------------------------------------------------------------------
+function HexDirsForY(y)
+	if y % 2 ~= 0 then
+		return {{1, 1}, {1, 0}, {1, -1}, {0, -1}, {-1, 0}, {0, 1}};
+	end
+	return {{0, 1}, {1, 0}, {0, -1}, {-1, -1}, {-1, 0}, {-1, 1}};
+end
+------------------------------------------------------------------------------
+-- Size of the contiguous mountain blob touching (x,y) (hex-adjacency),
+-- counting any pre-existing mountains it connects to. Stops early past
+-- cap since callers only care whether it's exceeded.
+function MountainClumpSize(plotTypes, iW, iH, x, y, cap)
+	local visited = {};
+	local qx, qy = {x}, {y};
+	visited[y * iW + x] = true;
+	local count = 0;
+	local qi = 1;
+	while qi <= #qx do
+		local px, py = qx[qi], qy[qi];
+		qi = qi + 1;
+		count = count + 1;
+		if count > cap then
+			return count;
+		end
+		local dirs = HexDirsForY(py);
+		local d = 1;
+		while d <= 6 do
+			local nx, ny = px + dirs[d][1], py + dirs[d][2];
+			if nx >= 0 and nx < iW and ny >= 0 and ny < iH then
+				local nk = ny * iW + nx;
+				if visited[nk] ~= true and plotTypes[ny * iW + nx + 1] == PlotTypes.PLOT_MOUNTAIN then
+					visited[nk] = true;
+					qx[#qx + 1] = nx;
+					qy[#qy + 1] = ny;
+				end
+			end
+			d = d + 1;
+		end
+	end
+	return count;
+end
+------------------------------------------------------------------------------
+-- Like PlaceMirroredMountain, but rejects (and reverts) the placement if it
+-- would grow either side's mountain blob past cap -- including merging
+-- into mountains already placed by the normal (non-front) terrain pass.
+function PlaceMirroredMountainCapped(plotTypes, iW, iH, x, y, cap)
+	if x < 0 or x >= iW or y < 0 or y >= iH then
+		return false
+	end
+	local idx = y * iW + x + 1;
+	if plotTypes[idx] == PlotTypes.PLOT_MOUNTAIN then
+		return false
+	end
+	local mx, my = iW - x - 1, iH - y - 1;
+	local midx = my * iW + mx + 1;
+	local prevA, prevB = plotTypes[idx], plotTypes[midx];
+	plotTypes[idx] = PlotTypes.PLOT_MOUNTAIN;
+	plotTypes[midx] = PlotTypes.PLOT_MOUNTAIN;
+	if MountainClumpSize(plotTypes, iW, iH, x, y, cap) > cap or MountainClumpSize(plotTypes, iW, iH, mx, my, cap) > cap then
+		plotTypes[idx] = prevA;
+		plotTypes[midx] = prevB;
+		return false
+	end
+	return true
+end
+------------------------------------------------------------------------------
+-- Column-weighted front ridge design: mountains sit only on the barrier's
+-- transition column and the two columns beyond it, weighted toward the
+-- middle one (col2), in a handful of short ridges instead of a
+-- continuous scattered band. West side only; PlaceMirroredMountain
+-- handles the east side automatically.
+function GetFrontMountainColumnsWest(iW)
+	local wrapN, centerN = ResolveSnowWrapWidths();
+	local half = centerN / 2;
+	local mid = math.floor(iW / 2);
+	-- col1 is the transition column itself (matches GetSnowWrapTundraColumns'
+	-- mid - half - 1); col2/col3 step further west from there.
+	return mid - half - 1, mid - half - 2, mid - half - 3;
+end
+------------------------------------------------------------------------------
+-- Same three positions, but as offsets from TiltedFoldMid(y) instead of a
+-- fixed column, for climates whose barrier runs along the diagonal fold
+-- (Standard-Diagonal). Pass these to PlaceFrontMountainRidges with
+-- tilted=true.
+function GetFrontMountainOffsetsWest()
+	local wrapN, centerN = ResolveSnowWrapWidths();
+	local half = centerN / 2;
+	return -(half + 1), -(half + 2), -(half + 3);
+end
+------------------------------------------------------------------------------
+function PickFrontMountainColumn(col1, col2, col3)
+	local roll = Map.Rand(100, "Front Mountain Column");
+	if roll < 20 then
+		return col1
+	elseif roll < 80 then
+		return col2
+	end
+	return col3
+end
+------------------------------------------------------------------------------
+-- col1/col2/col3 are absolute columns, unless tilted=true, in which case
+-- they're offsets from TiltedFoldMid(y) (see GetFrontMountainOffsetsWest)
+-- and get re-resolved to an absolute x every step, so the ridge tracks the
+-- diagonal barrier instead of cutting straight through it.
+function PlaceFrontMountainRidges(plotTypes, iW, iH, col1, col2, col3, budget, clumpCap, tilted)
+	if budget < 1 then
+		return
+	end
+	local nRidges = 4 + Map.Rand(2, "Front Ridge Count"); -- 4 or 5
+	local sizes = {};
+	local remaining = budget;
+	local i = 1;
+	while i <= nRidges do
+		local ridgesLeft = nRidges - i + 1;
+		local size;
+		if ridgesLeft == 1 then
+			size = remaining;
+		else
+			local maxSize = remaining - (ridgesLeft - 1);
+			if maxSize < 1 then
+				maxSize = 1;
+			end
+			size = 1 + Map.Rand(maxSize, "Front Ridge Size");
+		end
+		-- A single vertical run can't hold more than clumpCap tiles anyway;
+		-- clamp here so allocation doesn't waste budget on an impossible
+		-- target (the drift below can still let a ridge exceed this by
+		-- spilling into a neighboring column).
+		if size > clumpCap then
+			size = clumpCap;
+		end
+		sizes[i] = size;
+		remaining = remaining - size;
+		i = i + 1;
+	end
+
+	local yLo, yHi = 1, iH - 2;
+	local span = yHi - yLo + 1;
+	if span < nRidges then
+		span = nRidges;
+	end
+	local jitter = math.floor(span / nRidges / 2);
+	if jitter < 1 then
+		jitter = 1;
+	end
+	local ri = 1;
+	while ri <= nRidges do
+		local slot = yLo + math.floor(((ri - 0.5) * span) / nRidges);
+		local sy = slot + Map.Rand(jitter * 2 + 1, "Front Ridge Jitter") - jitter;
+		if sy < yLo then
+			sy = yLo;
+		end
+		if sy > yHi then
+			sy = yHi;
+		end
+
+		-- One column for (most of) the whole ridge, walked vertically in a
+		-- single direction, so each ridge reads as a tall little spine
+		-- rather than a horizontal scatter. A small chance per step to
+		-- drift to the adjacent column keeps it from being a perfectly
+		-- straight line.
+		local col = PickFrontMountainColumn(col1, col2, col3);
+		local dir = 1;
+		if Map.Rand(2, "Front Ridge Dir") == 0 then
+			dir = -1;
+		end
+
+		local size = sizes[ri];
+		local placed = 0;
+		local y = sy;
+		local steps = 0;
+		local maxSteps = size * 12 + 20;
+		while placed < size and steps < maxSteps do
+			steps = steps + 1;
+			local x = col;
+			if tilted then
+				x = TiltedFoldMid(y) + col;
+			end
+			if PlaceMirroredMountainCapped(plotTypes, iW, iH, x, y, clumpCap) then
+				placed = placed + 1;
+			end
+			y = y + dir;
+			if y < yLo then
+				y = yLo;
+				dir = -dir;
+			end
+			if y > yHi then
+				y = yHi;
+				dir = -dir;
+			end
+			if Map.Rand(100, "Front Ridge Drift") < 12 then
+				if col == col2 then
+					if Map.Rand(2, "Front Ridge Drift Side") == 0 then
+						col = col1;
+					else
+						col = col3;
+					end
+				else
+					col = col2;
+				end
+			end
+		end
+		ri = ri + 1;
+	end
 end
 ------------------------------------------------------------------------------
 function PlaceChaoticFrontRidge(plotTypes, iW, iH, xCenter, density)
@@ -5935,43 +6146,40 @@ function MultilayeredFractal:GeneratePlotsByRegion()
 			self.wholeworldPlotTypes[i_east_plot] = PlotTypes.PLOT_MOUNTAIN;
 		end
 	end
-	if IsOldSnow() then
-		for x = iW / 2 - 4, iW / 2 + 3 do
-			for y = 0, iH - 1 do
-				local i = y * iW + x + 1;
-				self.wholeworldPlotTypes[i] = PlotTypes.PLOT_LAND;
-			end
-		end
-		local west_half, east_half = {}, {};
-		for loop = 1, iH - 2 do
-			table.insert(west_half, loop);
-			table.insert(east_half, loop);
-		end
-		local west_shuffled = GetShuffledCopyOfTable(west_half)
-		local east_shuffled = GetShuffledCopyOfTable(east_half)
-
-		local mountainOps = Map.GetCustomOption(OPT_FRONT_MOUNTAIN)
-		local mountainDensity = .20 + .05 * mountainOps
-
-		local iNumMountainsPerColumn = math.floor(iH * mountainDensity);
-		local x_west, x_east = iW / 2 - 4, iW / 2 + 3;
-		for loop = 1, iNumMountainsPerColumn do
-			local y_west, y_east = west_shuffled[loop], iH - 1- west_shuffled[loop];
-			local i_west_plot = y_west * iW + x_west + 1;
-			local i_east_plot = y_east * iW + x_east + 1;
-			self.wholeworldPlotTypes[i_west_plot] = PlotTypes.PLOT_MOUNTAIN;
-			self.wholeworldPlotTypes[i_east_plot] = PlotTypes.PLOT_MOUNTAIN;
-		end
-	end
 	if IsSnowBarrier() then
 		local cfg = GetBarrierConfig();
-		local mountainOps = Map.GetCustomOption(OPT_FRONT_MOUNTAIN)
-		local mountainDensity = .20 + .05 * mountainOps
+		local mountainDensity = FRONT_MOUNTAIN_DENSITY;
 		if cfg.kind == "peaks" then
 			PlacePeaksFrontClusters(self.wholeworldPlotTypes, iW, iH, iW / 2 - 4, mountainDensity);
 			if IsSnowWrapX() then
 				local x_wrap_west = GetSnowWrapLandMountainXs(iW);
 				PlacePeaksFrontClusters(self.wholeworldPlotTypes, iW, iH, x_wrap_west, mountainDensity);
+			end
+		elseif cfg.kind == "snow" and cfg.tilted ~= true then
+			local col1, col2, col3 = GetFrontMountainColumnsWest(iW);
+			PlaceFrontMountainRidges(self.wholeworldPlotTypes, iW, iH, col1, col2, col3, FRONT_MOUNTAIN_BUDGET, FRONT_MOUNTAIN_CLUMP_CAP);
+			if IsSnowWrapX() then
+				local x_wrap_west = GetSnowWrapLandMountainXs(iW);
+				PlaceFrontMountainRidges(self.wholeworldPlotTypes, iW, iH, x_wrap_west - 1, x_wrap_west, x_wrap_west + 1, FRONT_MOUNTAIN_BUDGET, FRONT_MOUNTAIN_CLUMP_CAP);
+			end
+		elseif cfg.kind == "snow" and cfg.tilted == true then
+			-- Standard-Diagonal: same ridge design, but the three columns are
+			-- offsets from the row-local fold instead of a fixed column, so
+			-- ridges track the diagonal barrier.
+			local off1, off2, off3 = GetFrontMountainOffsetsWest();
+			PlaceFrontMountainRidges(self.wholeworldPlotTypes, iW, iH, off1, off2, off3, FRONT_MOUNTAIN_BUDGET_DIAGONAL, FRONT_MOUNTAIN_CLUMP_CAP, true);
+			if IsSnowWrapX() then
+				-- The wrap seam sits at the map edges, not on the tilted
+				-- fold, so it uses fixed columns like Standard's does.
+				local x_wrap_west = GetSnowWrapLandMountainXs(iW);
+				PlaceFrontMountainRidges(self.wholeworldPlotTypes, iW, iH, x_wrap_west - 1, x_wrap_west, x_wrap_west + 1, FRONT_MOUNTAIN_BUDGET_DIAGONAL, FRONT_MOUNTAIN_CLUMP_CAP);
+			end
+		elseif cfg.kind == "wetland" then
+			local col1, col2, col3 = GetFrontMountainColumnsWest(iW);
+			PlaceFrontMountainRidges(self.wholeworldPlotTypes, iW, iH, col1, col2, col3, FRONT_MOUNTAIN_BUDGET, FRONT_MOUNTAIN_CLUMP_CAP);
+			if IsSnowWrapX() then
+				local x_wrap_west = GetSnowWrapLandMountainXs(iW);
+				PlaceFrontMountainRidges(self.wholeworldPlotTypes, iW, iH, x_wrap_west - 1, x_wrap_west, x_wrap_west + 1, FRONT_MOUNTAIN_BUDGET, FRONT_MOUNTAIN_CLUMP_CAP);
 			end
 		elseif cfg.chaoticMountains then
 			if cfg.kind ~= "tongue" and cfg.kind ~= "snaky" then
@@ -9743,40 +9951,6 @@ function PaintStandardSnowRelief()
 		end
 		ri = ri + 1;
 	end
-	local nLake = 2 + Map.Rand(3, "Snow Ice Lake Count");
-	local nIce = 0;
-	local li = 1;
-	while li <= nLake do
-		local seed = land[Map.Rand(#land, "Snow Ice Seed") + 1];
-		if seed:GetPlotType() == PlotTypes.PLOT_LAND then
-			local blob = {seed};
-			local want = 1 + Map.Rand(2, "Snow Ice Size");
-			local grown = 0;
-			local qi = 1;
-			while qi <= #blob and grown < want do
-				local p = blob[qi];
-				qi = qi + 1;
-				if p:GetPlotType() == PlotTypes.PLOT_LAND then
-					p:SetPlotType(PlotTypes.PLOT_OCEAN, false, false);
-					p:SetTerrainType(TerrainTypes.TERRAIN_COAST, false, false);
-					p:SetFeatureType(FeatureTypes.FEATURE_ICE, -1);
-					grown = grown + 1;
-					nIce = nIce + 1;
-				end
-				local d = 0;
-				while d < DirectionTypes.NUM_DIRECTION_TYPES and grown < want do
-					local adj = PlotDirNoXWrap(p:GetX(), p:GetY(), d);
-					if adj ~= nil and adj:GetPlotType() == PlotTypes.PLOT_LAND then
-						if isTundraColAt(adj:GetX(), adj:GetY()) ~= true and Map.Rand(100, "Snow Ice Grow") < 70 then
-							table.insert(blob, adj);
-						end
-					end
-					d = d + 1;
-				end
-			end
-		end
-		li = li + 1;
-	end
 	local nLand = 0;
 	local nSolid = 0;
 	local hills = {};
@@ -9840,7 +10014,7 @@ function PaintStandardSnowRelief()
 			hi = hi + 1;
 		end
 	end
-	print("Standard snow relief: peaks=", nMtn, " hills=", nHill, " ice=", nIce, " flat=", nLand, "/", nSolid);
+	print("Standard snow relief: peaks=", nMtn, " hills=", nHill, " flat=", nLand, "/", nSolid);
 end
 ------------------------------------------------------------------------------
 function CapBarrierMountains()
@@ -11324,8 +11498,8 @@ function SnakyPlotIsEconLand(plot)
 end
 ------------------------------------------------------------------------------
 function SnakyPlaceContactMountains(iW, iH, skip, mirrored, dist)
-	local mtnOps = Map.GetCustomOption(OPT_FRONT_MOUNTAIN);
-	local seedPct = 20 + 3 * mtnOps;
+	-- Frozen at the former Front Mountain % option's 25% default (ops=1).
+	local seedPct = 20 + 3 * 1;
 	if seedPct > 42 then
 		seedPct = 42;
 	end
