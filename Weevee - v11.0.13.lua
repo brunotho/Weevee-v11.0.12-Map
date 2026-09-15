@@ -113,8 +113,8 @@ local FRONT_FOOTHILL_CHANCE = 90;
 local FRONT_DEHILL_CHANCE = 15;
 -- Testing switch: when true, PurgeFrontMountainColumns still runs (clearing
 -- tectonics' mountains out of the front's 3-column zone) but
--- PlaceFrontMountainRidges is skipped, so the purge alone can be judged
--- in-game before ridges are layered back on top of a clean slate.
+-- PlaceFrontMountainField is skipped, so the purge alone can be judged
+-- in-game before the field is layered back on top of a clean slate.
 local DISABLE_FRONT_MOUNTAIN_RIDGES = false;
 -- Every PlaceFrontMountainField call this attempt records its west-side
 -- columns/opening here, so AuditFrontMountainGaps (post-wonder, west side
@@ -3585,7 +3585,7 @@ end
 -- their tilted fold offsets) back to hills, on both the given tile and its
 -- 180-rotation mirror -- ApplyTectonics itself is not mirror-symmetric, so
 -- both sides need clearing explicitly. Used to strip whatever the normal
--- terrain pass seeded there before PlaceFrontMountainRidges builds on top
+-- terrain pass seeded there before PlaceFrontMountainField builds on top
 -- of a clean slate (see DISABLE_FRONT_MOUNTAIN_RIDGES for isolating this).
 function PurgeFrontMountainColumns(plotTypes, iW, iH, col1, col2, col3, tilted)
 	local cols = {col1, col2, col3};
@@ -3612,8 +3612,10 @@ function PurgeFrontMountainColumns(plotTypes, iW, iH, col1, col2, col3, tilted)
 	end
 end
 ------------------------------------------------------------------------------
--- Ground-up front mountain field, replacing the ridge design for the
--- Standard / Standard-Diagonal / Murky front. Rules, in priority order:
+-- Ground-up front mountain field, used by every non-WIP climate's front
+-- (Standard, Standard-Diagonal, Murky, Oasis, Peaky -- Frosty/Slate/
+-- Wasteland stay on the old chaotic-ridge/fallback systems). Rules, in
+-- priority order:
 --   1. Mountains are placed across all 5 front columns (col1-col5).
 --   2. Exactly one deliberate "opening" -- a run of 4-6 consecutive rows
 --      with zero mountains across all 5 columns -- guarantees a real pass
@@ -3857,124 +3859,6 @@ function AuditFrontMountainGaps()
 	end
 end
 ------------------------------------------------------------------------------
--- Superseded by PlaceFrontMountainField -- kept unused for now in case the
--- column-weighted ridge design needs to be compared against or restored.
-function PickFrontMountainColumn(col1, col2, col3)
-	local roll = Map.Rand(100, "Front Mountain Column");
-	if roll < 20 then
-		return col1
-	elseif roll < 80 then
-		return col2
-	end
-	return col3
-end
-------------------------------------------------------------------------------
--- col1/col2/col3 are absolute columns, unless tilted=true, in which case
--- they're offsets from TiltedFoldMid(y) (see GetFrontMountainOffsetsWest)
--- and get re-resolved to an absolute x every step, so the ridge tracks the
--- diagonal barrier instead of cutting straight through it.
-function PlaceFrontMountainRidges(plotTypes, iW, iH, col1, col2, col3, budget, clumpCap, tilted)
-	if budget < 1 then
-		return
-	end
-	local nRidges = 4 + Map.Rand(2, "Front Ridge Count"); -- 4 or 5
-	local sizes = {};
-	local remaining = budget;
-	local i = 1;
-	while i <= nRidges do
-		local ridgesLeft = nRidges - i + 1;
-		local size;
-		if ridgesLeft == 1 then
-			size = remaining;
-		else
-			local maxSize = remaining - (ridgesLeft - 1);
-			if maxSize < 1 then
-				maxSize = 1;
-			end
-			size = 1 + Map.Rand(maxSize, "Front Ridge Size");
-		end
-		-- A single vertical run can't hold more than clumpCap tiles anyway;
-		-- clamp here so allocation doesn't waste budget on an impossible
-		-- target (the drift below can still let a ridge exceed this by
-		-- spilling into a neighboring column).
-		if size > clumpCap then
-			size = clumpCap;
-		end
-		sizes[i] = size;
-		remaining = remaining - size;
-		i = i + 1;
-	end
-
-	local yLo, yHi = 1, iH - 2;
-	local span = yHi - yLo + 1;
-	if span < nRidges then
-		span = nRidges;
-	end
-	local jitter = math.floor(span / nRidges / 2);
-	if jitter < 1 then
-		jitter = 1;
-	end
-	local ri = 1;
-	while ri <= nRidges do
-		local slot = yLo + math.floor(((ri - 0.5) * span) / nRidges);
-		local sy = slot + Map.Rand(jitter * 2 + 1, "Front Ridge Jitter") - jitter;
-		if sy < yLo then
-			sy = yLo;
-		end
-		if sy > yHi then
-			sy = yHi;
-		end
-
-		-- One column for (most of) the whole ridge, walked vertically in a
-		-- single direction, so each ridge reads as a tall little spine
-		-- rather than a horizontal scatter. A small chance per step to
-		-- drift to the adjacent column keeps it from being a perfectly
-		-- straight line.
-		local col = PickFrontMountainColumn(col1, col2, col3);
-		local dir = 1;
-		if Map.Rand(2, "Front Ridge Dir") == 0 then
-			dir = -1;
-		end
-
-		local size = sizes[ri];
-		local placed = 0;
-		local y = sy;
-		local steps = 0;
-		local maxSteps = size * 12 + 20;
-		while placed < size and steps < maxSteps do
-			steps = steps + 1;
-			local x = col;
-			if tilted then
-				x = TiltedFoldMid(y) + col;
-			end
-			if PlaceMirroredMountainCapped(plotTypes, iW, iH, x, y, clumpCap) then
-				placed = placed + 1;
-			end
-			y = y + dir;
-			if y < yLo then
-				y = yLo;
-				dir = -dir;
-			end
-			if y > yHi then
-				y = yHi;
-				dir = -dir;
-			end
-			if Map.Rand(100, "Front Ridge Drift") < 12 then
-				if col == col2 then
-					if Map.Rand(2, "Front Ridge Drift Side") == 0 then
-						col = col1;
-					else
-						col = col3;
-					end
-				else
-					col = col2;
-				end
-			end
-		end
-		ri = ri + 1;
-	end
-end
-------------------------------------------------------------------------------
 function PlaceChaoticFrontRidge(plotTypes, iW, iH, xCenter, density)
 	local xMin = xCenter - 2;
 	local xMax = xCenter + 2;
@@ -3991,21 +3875,6 @@ function PlaceChaoticFrontRidge(plotTypes, iW, iH, xCenter, density)
 	end
 	local x = xCenter;
 	local y = Map.Rand(iH, "Chaotic Ridge StartY");
-	if IsOasisClimate() then
-		local midY = math.floor((iH - 1) / 2);
-		local jitter = math.floor(iH * 0.10);
-		if jitter < 1 then
-			jitter = 1;
-		end
-		y = midY + Map.Rand(jitter * 2 + 1, "Oasis Ridge StartY") - jitter;
-		local floorT = math.floor(iH * 0.28);
-		if floorT < 8 then
-			floorT = 8;
-		end
-		if target < floorT then
-			target = floorT;
-		end
-	end
 	local placed = 0;
 	local steps = 0;
 	local maxSteps = iH * 10;
@@ -4048,26 +3917,11 @@ function PlaceChaoticFrontRidge(plotTypes, iW, iH, xCenter, density)
 			dy = dy + dy;
 		end
 		y = y + dy;
-		if IsOasisClimate() then
-			if y < 1 then
-				y = 1 + Map.Rand(2, "Oasis Ridge Bounce");
-			end
-			if y >= iH - 1 then
-				y = iH - 2 - Map.Rand(2, "Oasis Ridge Bounce2");
-			end
-			if y < 0 then
-				y = 0;
-			end
-			if y >= iH then
-				y = iH - 1;
-			end
-		else
-			if y < 0 then
-				y = 0;
-			end
-			if y >= iH then
-				y = iH - 1;
-			end
+		if y < 0 then
+			y = 0;
+		end
+		if y >= iH then
+			y = iH - 1;
 		end
 		x = x + (Map.Rand(3, "Chaotic WalkX") - 1);
 		if x < xMin then
@@ -4076,310 +3930,6 @@ function PlaceChaoticFrontRidge(plotTypes, iW, iH, xCenter, density)
 		if x > xMax then
 			x = xMax;
 		end
-	end
-end
-------------------------------------------------------------------------------
-function EnsureOasisFrontMountainFloor(plotTypes, iW, iH, xCenter)
-	if plotTypes == nil or IsOasisClimate() == false then
-		return
-	end
-	local xMin = xCenter - 2;
-	local xMax = xCenter + 2;
-	if xMin < 0 then
-		xMin = 0;
-	end
-	local mid = math.floor(iW / 2);
-	if xMax >= mid then
-		xMax = mid - 1;
-	end
-	if xMin > xMax then
-		return
-	end
-	local yMidLo = math.floor(iH * 0.32);
-	local yMidHi = math.floor(iH * 0.68);
-	if yMidLo < 1 then
-		yMidLo = 1;
-	end
-	if yMidHi > iH - 2 then
-		yMidHi = iH - 2;
-	end
-	if yMidLo > yMidHi then
-		yMidLo = 1;
-		yMidHi = iH - 2;
-	end
-	local function canPlace(x, y)
-		if x < xMin or x > xMax or y < 0 or y >= iH then
-			return false
-		end
-		local t = plotTypes[y * iW + x + 1];
-		return t ~= PlotTypes.PLOT_MOUNTAIN and t ~= PlotTypes.PLOT_OCEAN;
-	end
-	local function countBand(xLo, xHi, yLo, yHi)
-		local n = 0;
-		local y = yLo;
-		while y <= yHi do
-			local x = xLo;
-			while x <= xHi do
-				if plotTypes[y * iW + x + 1] == PlotTypes.PLOT_MOUNTAIN then
-					n = n + 1;
-				end
-				x = x + 1;
-			end
-			y = y + 1;
-		end
-		return n
-	end
-	local function fill(xLo, xHi, yLo, yHi, want)
-		local need = want - countBand(xLo, xHi, yLo, yHi);
-		if need < 1 then
-			return
-		end
-		local ys = {};
-		local y = yLo;
-		while y <= yHi do
-			table.insert(ys, y);
-			y = y + 1;
-		end
-		if #ys < 1 then
-			return
-		end
-		if #ys > 1 then
-			ys = GetShuffledCopyOfTable(ys);
-		end
-		local pass = 1;
-		while pass <= 4 and need > 0 do
-			local i = 1;
-			while i <= #ys and need > 0 do
-				local yy = ys[i];
-				local x = xHi;
-				while x >= xLo do
-					if canPlace(x, yy) then
-						if PlaceMirroredMountain(plotTypes, iW, iH, x, yy) then
-							need = need - 1;
-							break
-						end
-					end
-					x = x - 1;
-				end
-				i = i + 1;
-			end
-			pass = pass + 1;
-		end
-	end
-	local minEast = math.floor(iH * 0.18);
-	if minEast < 6 then
-		minEast = 6;
-	end
-	fill(xMax - 1, xMax, 1, iH - 2, minEast);
-	local minMid = math.floor(iH * 0.10);
-	if minMid < 3 then
-		minMid = 3;
-	end
-	fill(xMin, xMax, yMidLo, yMidHi, minMid);
-	local minFront = math.floor(iH * 0.28);
-	if minFront < 8 then
-		minFront = 8;
-	end
-	fill(xMin, xMax, 1, iH - 2, minFront);
-end
-------------------------------------------------------------------------------
-function SlashOasisFrontMountainBlobs(plotTypes, iW, iH, xCenter)
-	if plotTypes == nil or IsOasisClimate() == false then
-		return
-	end
-	local xMin = xCenter - 2;
-	local xMax = xCenter + 2;
-	if xMin < 0 then
-		xMin = 0;
-	end
-	local mid = math.floor(iW / 2);
-	if xMax >= mid then
-		xMax = mid - 1;
-	end
-	if xMin > xMax then
-		return
-	end
-	local evenN = {{0, 1}, {1, 0}, {0, -1}, {-1, -1}, {-1, 0}, {-1, 1}};
-	local oddN = {{1, 1}, {1, 0}, {1, -1}, {0, -1}, {-1, 0}, {0, 1}};
-	local function hexDirs(y)
-		if y % 2 ~= 0 then
-			return oddN
-		end
-		return evenN
-	end
-	local function inBand(x, y)
-		return x >= xMin and x <= xMax and y >= 0 and y < iH
-	end
-	local function toHill(x, y)
-		local idx = y * iW + x + 1;
-		if plotTypes[idx] ~= PlotTypes.PLOT_MOUNTAIN then
-			return false
-		end
-		plotTypes[idx] = PlotTypes.PLOT_HILLS;
-		local mx = iW - x - 1;
-		local my = iH - y - 1;
-		plotTypes[my * iW + mx + 1] = PlotTypes.PLOT_HILLS;
-		return true
-	end
-	local nCut = 0;
-	local pass = 1;
-	while pass <= 2 do
-		local visited = {};
-		local y = 0;
-		while y < iH do
-			local x = xMin;
-			while x <= xMax do
-				local key = y * iW + x;
-				if visited[key] ~= true and plotTypes[y * iW + x + 1] == PlotTypes.PLOT_MOUNTAIN then
-					local blob = {};
-					local q = {{x, y}};
-					visited[key] = true;
-					local qi = 1;
-					while qi <= #q do
-						local px = q[qi][1];
-						local py = q[qi][2];
-						table.insert(blob, {px, py});
-						local dirs = hexDirs(py);
-						local d = 1;
-						while d <= 6 do
-							local nx = px + dirs[d][1];
-							local ny = py + dirs[d][2];
-							if inBand(nx, ny) then
-								local nk = ny * iW + nx;
-								if visited[nk] ~= true and plotTypes[ny * iW + nx + 1] == PlotTypes.PLOT_MOUNTAIN then
-									visited[nk] = true;
-									table.insert(q, {nx, ny});
-								end
-							end
-							d = d + 1;
-						end
-						qi = qi + 1;
-					end
-					if #blob >= 7 then
-						local sx = 0;
-						local sy = 0;
-						local bi = 1;
-						while bi <= #blob do
-							sx = sx + blob[bi][1];
-							sy = sy + blob[bi][2];
-							bi = bi + 1;
-						end
-						local cx = sx / #blob;
-						local cy = sy / #blob;
-						local scored = {};
-						bi = 1;
-						while bi <= #blob do
-							local dx = blob[bi][1] - cx;
-							local dy = blob[bi][2] - cy;
-							table.insert(scored, {blob[bi][1], blob[bi][2], dx * dx + dy * dy});
-							bi = bi + 1;
-						end
-						table.sort(scored, function(a, b)
-							return a[3] < b[3]
-						end);
-						local want = 2 + Map.Rand(2, "Oasis Mtn Slash");
-						local k = 1;
-						while k <= #scored and want > 0 do
-							if toHill(scored[k][1], scored[k][2]) then
-								want = want - 1;
-								nCut = nCut + 1;
-							end
-							k = k + 1;
-						end
-					end
-				end
-				x = x + 1;
-			end
-			y = y + 1;
-		end
-		pass = pass + 1;
-	end
-	print("Oasis front mountain slash tiles:", nCut);
-end
-------------------------------------------------------------------------------
-function PlacePeaksFrontClusters(plotTypes, iW, iH, xCenter, density)
-	local xMin = xCenter - 1;
-	local xMax = xCenter + 1;
-	if xMin < 0 then
-		xMin = 0;
-	end
-	local mid = math.floor(iW / 2);
-	if xMax >= mid then
-		xMax = mid - 1;
-	end
-	local nClusters = 2 + math.floor((density - 0.20) * 8);
-	if nClusters < 2 then
-		nClusters = 2;
-	end
-	if nClusters > 4 then
-		nClusters = 4;
-	end
-	local yLo = 2;
-	local yHi = iH - 3;
-	if yHi < yLo then
-		yHi = yLo;
-	end
-	local span = yHi - yLo + 1;
-	local seeds = {};
-	local c = 1;
-	while c <= nClusters do
-		local slot = yLo + math.floor(((c - 0.5) * span) / nClusters);
-		local sy = slot + Map.Rand(5, "Peaks Front Jitter") - 2;
-		if sy < yLo then
-			sy = yLo;
-		end
-		if sy > yHi then
-			sy = yHi;
-		end
-		table.insert(seeds, sy);
-		c = c + 1;
-	end
-	local evenN = {{0, 1}, {1, 0}, {0, -1}, {-1, -1}, {-1, 0}, {-1, 1}};
-	local oddN = {{1, 1}, {1, 0}, {1, -1}, {0, -1}, {-1, 0}, {0, 1}};
-	local si = 1;
-	while si <= #seeds do
-		local sy = seeds[si];
-		local sx = xMax;
-		if xCenter < mid * 0.5 then
-			sx = xMin;
-		end
-		if sx < xMin then
-			sx = xMin;
-		end
-		if sx > xMax then
-			sx = xMax;
-		end
-		local target = 2 + Map.Rand(2, "Peaks Front Cluster");
-		PlaceMirroredMountain(plotTypes, iW, iH, sx, sy);
-		local qx = {sx};
-		local qy = {sy};
-		local grown = 1;
-		local qi = 1;
-		while qi <= #qx and grown < target do
-			local cx = qx[qi];
-			local cy = qy[qi];
-			qi = qi + 1;
-			local dirs = evenN;
-			if cy % 2 == 1 then
-				dirs = oddN;
-			end
-			local d = 1;
-			while d <= 6 and grown < target do
-				local ax = cx + dirs[d][1];
-				local ay = cy + dirs[d][2];
-				if ax >= xMin and ax <= xMax and ay >= 1 and ay < iH - 1 then
-					if Map.Rand(100, "Peaks Front Grow") < 85 then
-						if PlaceMirroredMountain(plotTypes, iW, iH, ax, ay) then
-							grown = grown + 1;
-							table.insert(qx, ax);
-							table.insert(qy, ay);
-						end
-					end
-				end
-				d = d + 1;
-			end
-		end
-		si = si + 1;
 	end
 end
 ------------------------------------------------------------------------------
@@ -6457,10 +6007,17 @@ function MultilayeredFractal:GeneratePlotsByRegion()
 		local cfg = GetBarrierConfig();
 		local mountainDensity = FRONT_MOUNTAIN_DENSITY;
 		if cfg.kind == "peaks" then
-			PlacePeaksFrontClusters(self.wholeworldPlotTypes, iW, iH, iW / 2 - 4, mountainDensity);
+			local col1, col2, col3, col4, col5 = GetFrontMountainColumns5West(iW);
+			PurgeFrontMountainColumns(self.wholeworldPlotTypes, iW, iH, col1, col2, col3);
+			if not DISABLE_FRONT_MOUNTAIN_RIDGES then
+				PlaceFrontMountainField(self.wholeworldPlotTypes, iW, iH, col1, col2, col3, col4, col5, FRONT_MOUNTAIN_BUDGET, FRONT_MOUNTAIN_CLUMP_CAP);
+			end
 			if IsSnowWrapX() then
 				local x_wrap_west = GetSnowWrapLandMountainXs(iW);
-				PlacePeaksFrontClusters(self.wholeworldPlotTypes, iW, iH, x_wrap_west, mountainDensity);
+				PurgeFrontMountainColumns(self.wholeworldPlotTypes, iW, iH, x_wrap_west - 1, x_wrap_west, x_wrap_west + 1);
+				if not DISABLE_FRONT_MOUNTAIN_RIDGES then
+					PlaceFrontMountainField(self.wholeworldPlotTypes, iW, iH, x_wrap_west - 2, x_wrap_west - 1, x_wrap_west, x_wrap_west + 1, x_wrap_west + 2, FRONT_MOUNTAIN_BUDGET, FRONT_MOUNTAIN_CLUMP_CAP);
+				end
 			end
 		elseif cfg.kind == "snow" and cfg.tilted ~= true then
 			local col1, col2, col3, col4, col5 = GetFrontMountainColumns5West(iW);
@@ -6506,6 +6063,19 @@ function MultilayeredFractal:GeneratePlotsByRegion()
 					PlaceFrontMountainField(self.wholeworldPlotTypes, iW, iH, x_wrap_west - 2, x_wrap_west - 1, x_wrap_west, x_wrap_west + 1, x_wrap_west + 2, FRONT_MOUNTAIN_BUDGET, FRONT_MOUNTAIN_CLUMP_CAP);
 				end
 			end
+		elseif cfg.kind == "desert" then
+			local col1, col2, col3, col4, col5 = GetFrontMountainColumns5West(iW);
+			PurgeFrontMountainColumns(self.wholeworldPlotTypes, iW, iH, col1, col2, col3);
+			if not DISABLE_FRONT_MOUNTAIN_RIDGES then
+				PlaceFrontMountainField(self.wholeworldPlotTypes, iW, iH, col1, col2, col3, col4, col5, FRONT_MOUNTAIN_BUDGET, FRONT_MOUNTAIN_CLUMP_CAP);
+			end
+			if IsSnowWrapX() then
+				local x_wrap_west = GetSnowWrapLandMountainXs(iW);
+				PurgeFrontMountainColumns(self.wholeworldPlotTypes, iW, iH, x_wrap_west - 1, x_wrap_west, x_wrap_west + 1);
+				if not DISABLE_FRONT_MOUNTAIN_RIDGES then
+					PlaceFrontMountainField(self.wholeworldPlotTypes, iW, iH, x_wrap_west - 2, x_wrap_west - 1, x_wrap_west, x_wrap_west + 1, x_wrap_west + 2, FRONT_MOUNTAIN_BUDGET, FRONT_MOUNTAIN_CLUMP_CAP);
+				end
+			end
 		elseif cfg.chaoticMountains then
 			if cfg.kind ~= "tongue" and cfg.kind ~= "snaky" then
 				local dens = mountainDensity;
@@ -6516,10 +6086,6 @@ function MultilayeredFractal:GeneratePlotsByRegion()
 					end
 				end
 				PlaceChaoticFrontRidge(self.wholeworldPlotTypes, iW, iH, iW / 2 - 4, dens);
-				if cfg.kind == "desert" then
-					EnsureOasisFrontMountainFloor(self.wholeworldPlotTypes, iW, iH, iW / 2 - 4);
-					SlashOasisFrontMountainBlobs(self.wholeworldPlotTypes, iW, iH, iW / 2 - 4);
-				end
 			end
 			if IsSnowWrapX() then
 				local x_wrap_west = GetSnowWrapLandMountainXs(iW);
@@ -8922,6 +8488,7 @@ function AddFeatures()
 	AddNorthIceArms();
 	AddPeaksMassifForests();
 	AddPeaksFrontStrayForests();
+	AddPeaksInteriorStrayForests();
 	AddPeaksMeadows();
 	AddPeaksValleyMarsh();
 	AddPeaksNorthTundra();
@@ -13437,6 +13004,12 @@ function MireBleedTundraWood(iW, iH, skip, mirrored)
 	end
 end
 ------------------------------------------------------------------------------
+-- Flood-fills each same-band component and, if it's small (<=2 tiles),
+-- flips it to whichever OTHER band actually borders it most -- not a fixed
+-- 1<->2 swap, so a stray tundra speck surrounded by marsh becomes marsh
+-- (not forest), a stray grass/plains speck surrounded by tundra becomes
+-- tundra, etc. Covers all 3 bands (tundra/wood/fen), not just 1 and 2, so
+-- isolated marsh specks get cleaned up the same way.
 function MireCullSmallBandPatches(iW, iH, skip, mirrored)
 	local seen = {};
 	local y = 0;
@@ -13446,13 +13019,14 @@ function MireCullSmallBandPatches(iW, iH, skip, mirrored)
 			local i = y * iW + x + 1;
 			if seen[i] ~= true and skip[x] ~= true and MirrorOwnsPlot(x, y, mirrored, iW) then
 				local band = mireBand[i];
-				if band == 1 or band == 2 then
+				if band == 1 or band == 2 or band == 3 then
 					local plot = Map.GetPlot(x, y);
 					if plot ~= nil and plot:IsWater() == false then
 						local comp = {};
 						local q = {plot};
 						seen[i] = true;
 						table.insert(comp, plot);
+						local borderCount = {0, 0, 0};
 						local qi = 1;
 						while qi <= #q do
 							local p = q[qi];
@@ -13463,27 +13037,38 @@ function MireCullSmallBandPatches(iW, iH, skip, mirrored)
 								if adj ~= nil then
 									local ax = adj:GetX();
 									local ai = adj:GetY() * iW + ax + 1;
-									if seen[ai] ~= true and skip[ax] ~= true and mireBand[ai] == band and adj:IsWater() == false then
+									local aBand = mireBand[ai];
+									if aBand == band and seen[ai] ~= true and skip[ax] ~= true and adj:IsWater() == false then
 										seen[ai] = true;
 										table.insert(q, adj);
 										table.insert(comp, adj);
+									elseif aBand ~= band and aBand ~= nil and aBand >= 1 and aBand <= 3 and skip[ax] ~= true and adj:IsWater() == false then
+										borderCount[aBand] = borderCount[aBand] + 1;
 									end
 								end
 								d = d + 1;
 							end
 						end
 						if #comp <= 2 then
-							local flip = 2;
-							if band == 2 then
-								flip = 1;
+							local flip = band;
+							local best = 0;
+							local bi = 1;
+							while bi <= 3 do
+								if bi ~= band and borderCount[bi] > best then
+									best = borderCount[bi];
+									flip = bi;
+								end
+								bi = bi + 1;
 							end
-							local ci = 1;
-							while ci <= #comp do
-								local p = comp[ci];
-								local pi = p:GetY() * iW + p:GetX() + 1;
-								mireBand[pi] = flip;
-								MireApplyBandTerrain(p, flip);
-								ci = ci + 1;
+							if flip ~= band then
+								local ci = 1;
+								while ci <= #comp do
+									local p = comp[ci];
+									local pi = p:GetY() * iW + p:GetX() + 1;
+									mireBand[pi] = flip;
+									MireApplyBandTerrain(p, flip);
+									ci = ci + 1;
+								end
 							end
 						end
 					end
@@ -15714,6 +15299,76 @@ function AddPeaksFrontStrayForests()
 		i = i + 1;
 	end
 	print("Peaks front stray forests:", n);
+end
+------------------------------------------------------------------------------
+-- AddPeaksFrontStrayForests only scatters forest within 7 columns of the
+-- barrier's own front (peakDist 1-3, i.e. near-front massifs specifically).
+-- Peaks massifs are scattered across the whole west half though, so most of
+-- the map's flat land sits far from any massif and this never touched it --
+-- this is the "away from the peaks" counterpart, using the same peakDist
+-- field but inverted (far from any mountain) and with no column bound.
+function AddPeaksInteriorStrayForests()
+	local cfg = GetBarrierConfig();
+	if cfg == nil or cfg.kind ~= "peaks" then
+		return
+	end
+	local iW, iH = Map.GetGridSize();
+	local skip = FillMireSkip(iW);
+	local mirrored = (DEF_MIRRORED == 1);
+	local cands = {};
+	local y = 0;
+	while y < iH do
+		local x = 0;
+		while x < iW do
+			if skip[x] ~= true and MirrorOwnsPlot(x, y, mirrored, iW) then
+				local i = y * iW + x + 1;
+				local d = peakDist[i];
+				if d ~= nil and d >= 5 then
+					local plot = Map.GetPlot(x, y);
+					if plot ~= nil and plot:IsWater() == false and plot:GetPlotType() ~= PlotTypes.PLOT_MOUNTAIN then
+						if plot:GetFeatureType() == FeatureTypes.NO_FEATURE then
+							table.insert(cands, plot);
+						end
+					end
+				end
+			end
+			x = x + 1;
+		end
+		y = y + 1;
+	end
+	if #cands < 1 then
+		return
+	end
+	cands = GetShuffledCopyOfTable(cands);
+	local nWant = math.floor(#cands * 0.06 + 0.5);
+	if nWant < 1 then
+		nWant = 1;
+	end
+	if nWant > #cands then
+		nWant = #cands;
+	end
+	local n = 0;
+	local i = 1;
+	while i <= nWant do
+		cands[i]:SetFeatureType(FeatureTypes.FEATURE_FOREST, -1);
+		n = n + 1;
+		if Map.Rand(100, "Peaks Interior Forest Grow") < 40 then
+			local d = 0;
+			while d < DirectionTypes.NUM_DIRECTION_TYPES do
+				local adj = PlotDirNoXWrap(cands[i]:GetX(), cands[i]:GetY(), d);
+				if adj ~= nil and adj:IsWater() == false and adj:GetPlotType() ~= PlotTypes.PLOT_MOUNTAIN then
+					if adj:GetFeatureType() == FeatureTypes.NO_FEATURE and skip[adj:GetX()] ~= true then
+						adj:SetFeatureType(FeatureTypes.FEATURE_FOREST, -1);
+						n = n + 1;
+						break
+					end
+				end
+				d = d + 1;
+			end
+		end
+		i = i + 1;
+	end
+	print("Peaks interior stray forests:", n, "/", #cands, " candidates");
 end
 ------------------------------------------------------------------------------
 function AddPeaksThawRiverTundra()
