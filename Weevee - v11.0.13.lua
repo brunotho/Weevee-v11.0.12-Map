@@ -95,16 +95,33 @@ local OPT_WRAP = 3;
 -- Frozen value of the former "Front Mountain %" custom option (was the
 -- default, 25%) now that the option itself has been removed.
 local FRONT_MOUNTAIN_DENSITY = 0.25;
--- Per-side mountain budget for the column-weighted front ridge design.
--- Mirrored automatically to the other front.
-local FRONT_MOUNTAIN_BUDGET = 12;
+-- Per-side mountain budget for the front mountain field (5 columns).
+-- Mirrored automatically to the other front. Static for now while the new
+-- field design (PlaceFrontMountainField) is being tuned from scratch.
+local FRONT_MOUNTAIN_BUDGET = 15;
 -- Kept separate from FRONT_MOUNTAIN_BUDGET in case Standard-Diagonal needs
 -- to diverge again later (it reads busier at the same budget, since its
--- ridges trace the fold instead of a straight column).
-local FRONT_MOUNTAIN_BUDGET_DIAGONAL = 12;
+-- field traces the fold instead of straight columns).
+local FRONT_MOUNTAIN_BUDGET_DIAGONAL = 15;
 -- No contiguous mountain blob touching the front ridges may exceed this
 -- many tiles, counting merges with mountains from the normal terrain pass.
 local FRONT_MOUNTAIN_CLUMP_CAP = 5;
+-- Chance a flat tile adjacent to a mountain becomes hills (was a flat 100%).
+local FRONT_FOOTHILL_CHANCE = 90;
+-- Inverse rule: chance a hill with NO adjacent mountain gets demoted back
+-- to flat, thinning out hills that aren't actually next to what made them.
+local FRONT_DEHILL_CHANCE = 15;
+-- Testing switch: when true, PurgeFrontMountainColumns still runs (clearing
+-- tectonics' mountains out of the front's 3-column zone) but
+-- PlaceFrontMountainRidges is skipped, so the purge alone can be judged
+-- in-game before ridges are layered back on top of a clean slate.
+local DISABLE_FRONT_MOUNTAIN_RIDGES = false;
+-- Every PlaceFrontMountainField call this attempt records its west-side
+-- columns/opening here, so AuditFrontMountainGaps (post-wonder, west side
+-- only) can re-check rule 3 against the final map -- including Natural
+-- Wonders that landed in columns 4-5 after generation already committed to
+-- a layout. Always reassigned fresh in GeneratePlotTypes before it's read.
+local frontMountainZones = {};
 local SPLIT_SNOW = 1;
 local SPLIT_SNOW_V2 = 2;
 local SPLIT_WETLAND = 3;
@@ -115,7 +132,7 @@ local SPLIT_FROSTY = 7;
 local SPLIT_TONGUE = 8;
 local SPLIT_SNAKY = 9;
 local SPLIT_RANDOM = 10;
-local BARE_MOUNTAIN_TARGET = 27;
+local BARE_MOUNTAIN_TARGET = 20;
 local SPLIT_MENU_RANDOM = 1; -- Random's dropdown position
 local WRAP_NO = 1;
 local WRAP_YES = 2;
@@ -3534,25 +3551,314 @@ end
 -- middle one (col2), in a handful of short ridges instead of a
 -- continuous scattered band. West side only; PlaceMirroredMountain
 -- handles the east side automatically.
-function GetFrontMountainColumnsWest(iW)
+-- Five positions instead of three: col1 is the transition column itself
+-- (matches GetSnowWrapTundraColumns' mid - half - 1), col2-col5 step
+-- further west from there. Only col1-col3 get purged clean of tectonics
+-- mountains (see PurgeFrontMountainColumns); col4/col5 are placed into
+-- on top of whatever tectonics already left there, by design.
+function GetFrontMountainColumns5West(iW)
 	local wrapN, centerN = ResolveSnowWrapWidths();
 	local half = centerN / 2;
 	local mid = math.floor(iW / 2);
-	-- col1 is the transition column itself (matches GetSnowWrapTundraColumns'
-	-- mid - half - 1); col2/col3 step further west from there.
-	return mid - half - 1, mid - half - 2, mid - half - 3;
+	return mid - half - 1, mid - half - 2, mid - half - 3, mid - half - 4, mid - half - 5;
+end
+function GetFrontMountainColumnsWest(iW)
+	local col1, col2, col3 = GetFrontMountainColumns5West(iW);
+	return col1, col2, col3;
 end
 ------------------------------------------------------------------------------
--- Same three positions, but as offsets from TiltedFoldMid(y) instead of a
+-- Same five positions, but as offsets from TiltedFoldMid(y) instead of a
 -- fixed column, for climates whose barrier runs along the diagonal fold
--- (Standard-Diagonal). Pass these to PlaceFrontMountainRidges with
+-- (Standard-Diagonal). Pass these to PlaceFrontMountainField with
 -- tilted=true.
-function GetFrontMountainOffsetsWest()
+function GetFrontMountainOffsets5West()
 	local wrapN, centerN = ResolveSnowWrapWidths();
 	local half = centerN / 2;
-	return -(half + 1), -(half + 2), -(half + 3);
+	return -(half + 1), -(half + 2), -(half + 3), -(half + 4), -(half + 5);
+end
+function GetFrontMountainOffsetsWest()
+	local off1, off2, off3 = GetFrontMountainOffsets5West();
+	return off1, off2, off3;
 end
 ------------------------------------------------------------------------------
+-- Demotes every mountain in the front's 3-column zone (col1/col2/col3, or
+-- their tilted fold offsets) back to hills, on both the given tile and its
+-- 180-rotation mirror -- ApplyTectonics itself is not mirror-symmetric, so
+-- both sides need clearing explicitly. Used to strip whatever the normal
+-- terrain pass seeded there before PlaceFrontMountainRidges builds on top
+-- of a clean slate (see DISABLE_FRONT_MOUNTAIN_RIDGES for isolating this).
+function PurgeFrontMountainColumns(plotTypes, iW, iH, col1, col2, col3, tilted)
+	local cols = {col1, col2, col3};
+	for y = 1, iH - 2 do
+		local ci = 1;
+		while ci <= 3 do
+			local x = cols[ci];
+			if tilted then
+				x = TiltedFoldMid(y) + cols[ci];
+			end
+			if x >= 0 and x < iW then
+				local idx = y * iW + x + 1;
+				if plotTypes[idx] == PlotTypes.PLOT_MOUNTAIN then
+					plotTypes[idx] = PlotTypes.PLOT_HILLS;
+				end
+				local mx, my = iW - x - 1, iH - y - 1;
+				local midx = my * iW + mx + 1;
+				if plotTypes[midx] == PlotTypes.PLOT_MOUNTAIN then
+					plotTypes[midx] = PlotTypes.PLOT_HILLS;
+				end
+			end
+			ci = ci + 1;
+		end
+	end
+end
+------------------------------------------------------------------------------
+-- Ground-up front mountain field, replacing the ridge design for the
+-- Standard / Standard-Diagonal / Murky front. Rules, in priority order:
+--   1. Mountains are placed across all 5 front columns (col1-col5).
+--   2. Exactly one deliberate "opening" -- a run of 4-6 consecutive rows
+--      with zero mountains across all 5 columns -- guarantees a real pass
+--      through the front.
+--   3. Outside that opening, no run of 7+ consecutive rows is ever left
+--      without a mountain (a random 1-6 row threshold, re-rolled after each
+--      forced mountain, keeps the spacing irregular but always <= 6).
+--   4. Whatever budget is left after satisfying 2/3 is scattered at random
+--      rows/columns (never inside the opening) for a high-noise field.
+-- col1-col5 are absolute columns, unless tilted=true, in which case they're
+-- offsets from TiltedFoldMid(y) (see GetFrontMountainOffsets5West) and get
+-- re-resolved to an absolute x every row, so the field tracks the diagonal
+-- barrier instead of cutting straight through it.
+function PlaceFrontMountainField(plotTypes, iW, iH, col1, col2, col3, col4, col5, budget, clumpCap, tilted)
+	if budget < 1 then
+		return
+	end
+	local cols = {col1, col2, col3, col4, col5};
+	local yLo, yHi = 1, iH - 2;
+	local span = yHi - yLo + 1;
+	if span < 1 then
+		return
+	end
+
+	local openLen = 4 + Map.Rand(3, "Front Opening Length"); -- 4, 5 or 6
+	if openLen > span then
+		openLen = span;
+	end
+	local openStart = yLo + Map.Rand(span - openLen + 1, "Front Opening Start");
+	local openEnd = openStart + openLen - 1;
+	table.insert(frontMountainZones, {cols = cols, tilted = tilted, openStart = openStart, openEnd = openEnd});
+
+	local function resolveX(col, y)
+		if tilted then
+			return TiltedFoldMid(y) + col;
+		end
+		return col;
+	end
+
+	-- Tries the 5 columns at row y in random order (falling through on a
+	-- clump-cap rejection) and places on the first that succeeds.
+	local function tryPlaceAt(y)
+		local order = GetShuffledCopyOfTable({1, 2, 3, 4, 5});
+		local k = 1;
+		while k <= 5 do
+			local x = resolveX(cols[order[k]], y);
+			if PlaceMirroredMountainCapped(plotTypes, iW, iH, x, y, clumpCap) then
+				return true;
+			end
+			k = k + 1;
+		end
+		return false;
+	end
+
+	-- Backbone pass: guarantees rules 2 and 3 first, since they're
+	-- structural, before any budget is spent on random noise.
+	local remaining = budget;
+	local sinceMountain = 0;
+	local threshold = 1 + Map.Rand(6, "Front Backbone Gap");
+	local y = yLo;
+	while y <= yHi and remaining > 0 do
+		local inOpening = (y >= openStart and y <= openEnd);
+		local mustForce = false;
+		if not inOpening then
+			sinceMountain = sinceMountain + 1;
+			if sinceMountain > threshold then
+				mustForce = true;
+			end
+		end
+		-- Pin the row just outside each end of the opening too, so the
+		-- mountain-free run can't drift wider than openLen by merging with
+		-- whatever gap happens to sit next to it.
+		if y == openStart - 1 or y == openEnd + 1 then
+			mustForce = true;
+		end
+		if mustForce and not inOpening then
+			if tryPlaceAt(y) then
+				remaining = remaining - 1;
+				sinceMountain = 0;
+				threshold = 1 + Map.Rand(6, "Front Backbone Gap");
+			end
+		end
+		y = y + 1;
+	end
+
+	-- Noise pass: whatever budget remains is scattered at random rows
+	-- (excluding the opening) for the high-random, high-noise look.
+	local noiseRows = {};
+	for ny = yLo, yHi do
+		if ny < openStart or ny > openEnd then
+			table.insert(noiseRows, ny);
+		end
+	end
+	local shuffledRows = GetShuffledCopyOfTable(noiseRows);
+	local ri = 1;
+	while remaining > 0 and ri <= #shuffledRows do
+		if tryPlaceAt(shuffledRows[ri]) then
+			remaining = remaining - 1;
+		end
+		ri = ri + 1;
+	end
+end
+------------------------------------------------------------------------------
+-- Live-map (Map.GetPlot, not the plotTypes array) equivalent of
+-- MountainClumpSize, for use after GeneratePlotTypes has finished and the
+-- temporary plotTypes array is gone.
+function LiveMountainClumpSize(x, y, cap)
+	local iW, iH = Map.GetGridSize();
+	local visited = {};
+	local qx, qy = {x}, {y};
+	visited[y * iW + x] = true;
+	local count = 0;
+	local qi = 1;
+	while qi <= #qx do
+		local px, py = qx[qi], qy[qi];
+		qi = qi + 1;
+		count = count + 1;
+		if count > cap then
+			return count;
+		end
+		local dirs = HexDirsForY(py);
+		local d = 1;
+		while d <= 6 do
+			local nx, ny = px + dirs[d][1], py + dirs[d][2];
+			if nx >= 0 and nx < iW and ny >= 0 and ny < iH then
+				local nk = ny * iW + nx;
+				if visited[nk] ~= true then
+					local p = Map.GetPlot(nx, ny);
+					if p ~= nil and p:GetPlotType() == PlotTypes.PLOT_MOUNTAIN then
+						visited[nk] = true;
+						qx[#qx + 1] = nx;
+						qy[#qy + 1] = ny;
+					end
+				end
+			end
+			d = d + 1;
+		end
+	end
+	return count;
+end
+------------------------------------------------------------------------------
+function TryPatchFrontMountainGap(x, y, cap)
+	if x < 0 or x >= Map.GetGridSize() then
+		return false
+	end
+	local plot = Map.GetPlot(x, y);
+	if plot == nil or plot:IsWater() or plot:GetPlotType() == PlotTypes.PLOT_MOUNTAIN or PlotHasNaturalWonder(plot) then
+		return false
+	end
+	local prevType = plot:GetPlotType();
+	plot:SetPlotType(PlotTypes.PLOT_MOUNTAIN, false, false);
+	if LiveMountainClumpSize(x, y, cap) > cap then
+		plot:SetPlotType(prevType, false, false);
+		return false
+	end
+	return true
+end
+------------------------------------------------------------------------------
+-- Post-wonder safety net for PlaceFrontMountainField's rule 3 (no 7+ row
+-- gap with zero mountains). Natural Wonders can land in columns 4-5 (the
+-- two columns deliberately left un-purged, contaminated by tectonics) after
+-- generation already committed to a mountain layout -- they're never
+-- touched or demoted, but they DO count as an obstacle here, the same as a
+-- mountain would, since most Natural Wonders are impassable. Must run after
+-- PlaceNaturalWonders and before MirrorPlotsAfterResourcePlacement -- west
+-- side only, the mirror copy carries any patch over to east automatically.
+function AuditFrontMountainGaps()
+	local iW, iH = Map.GetGridSize();
+	local yLo, yHi = 1, iH - 2;
+	local zi = 1;
+	while zi <= #frontMountainZones do
+		local zone = frontMountainZones[zi];
+		local cols = zone.cols;
+		local gapStart = nil;
+		local y = yLo;
+		while y <= yHi + 1 do
+			local inOpening = (y >= zone.openStart and y <= zone.openEnd);
+			local occupied = false;
+			if y <= yHi and not inOpening then
+				local ci = 1;
+				while ci <= 5 do
+					local x = cols[ci];
+					if zone.tilted then
+						x = TiltedFoldMid(y) + cols[ci];
+					end
+					if x >= 0 and x < iW then
+						local plot = Map.GetPlot(x, y);
+						if plot ~= nil then
+							if plot:GetPlotType() == PlotTypes.PLOT_MOUNTAIN then
+								occupied = true;
+							elseif (ci == 4 or ci == 5) and PlotHasNaturalWonder(plot) then
+								occupied = true;
+							end
+						end
+					end
+					ci = ci + 1;
+				end
+			end
+			if y > yHi or inOpening or occupied then
+				if gapStart ~= nil then
+					local gapEnd = y - 1;
+					if (gapEnd - gapStart + 1) >= 7 then
+						local midY = gapStart + math.floor((gapEnd - gapStart) / 2);
+						local patched = false;
+						local dy = 0;
+						while patched == false and dy <= (gapEnd - gapStart) do
+							local tries = {midY + dy, midY - dy};
+							local ti = 1;
+							while ti <= 2 and patched == false do
+								local py = tries[ti];
+								if py >= gapStart and py <= gapEnd then
+									local order = GetShuffledCopyOfTable({1, 2, 3});
+									local ci2 = 1;
+									while ci2 <= 3 and patched == false do
+										local x = cols[order[ci2]];
+										if zone.tilted then
+											x = TiltedFoldMid(py) + cols[order[ci2]];
+										end
+										patched = TryPatchFrontMountainGap(x, py, FRONT_MOUNTAIN_CLUMP_CAP);
+										ci2 = ci2 + 1;
+									end
+								end
+								ti = ti + 1;
+							end
+							dy = dy + 1;
+						end
+						if patched == false then
+							WeeveeDbg("AuditFrontMountainGaps: could not patch gap rows " .. gapStart .. "-" .. gapEnd);
+						end
+					end
+				end
+				gapStart = nil;
+			else
+				if gapStart == nil then
+					gapStart = y;
+				end
+			end
+			y = y + 1;
+		end
+		zi = zi + 1;
+	end
+end
+------------------------------------------------------------------------------
+-- Superseded by PlaceFrontMountainField -- kept unused for now in case the
+-- column-weighted ridge design needs to be compared against or restored.
 function PickFrontMountainColumn(col1, col2, col3)
 	local roll = Map.Rand(100, "Front Mountain Column");
 	if roll < 20 then
@@ -6146,6 +6452,7 @@ function MultilayeredFractal:GeneratePlotsByRegion()
 			self.wholeworldPlotTypes[i_east_plot] = PlotTypes.PLOT_MOUNTAIN;
 		end
 	end
+	frontMountainZones = {};
 	if IsSnowBarrier() then
 		local cfg = GetBarrierConfig();
 		local mountainDensity = FRONT_MOUNTAIN_DENSITY;
@@ -6156,30 +6463,48 @@ function MultilayeredFractal:GeneratePlotsByRegion()
 				PlacePeaksFrontClusters(self.wholeworldPlotTypes, iW, iH, x_wrap_west, mountainDensity);
 			end
 		elseif cfg.kind == "snow" and cfg.tilted ~= true then
-			local col1, col2, col3 = GetFrontMountainColumnsWest(iW);
-			PlaceFrontMountainRidges(self.wholeworldPlotTypes, iW, iH, col1, col2, col3, FRONT_MOUNTAIN_BUDGET, FRONT_MOUNTAIN_CLUMP_CAP);
+			local col1, col2, col3, col4, col5 = GetFrontMountainColumns5West(iW);
+			PurgeFrontMountainColumns(self.wholeworldPlotTypes, iW, iH, col1, col2, col3);
+			if not DISABLE_FRONT_MOUNTAIN_RIDGES then
+				PlaceFrontMountainField(self.wholeworldPlotTypes, iW, iH, col1, col2, col3, col4, col5, FRONT_MOUNTAIN_BUDGET, FRONT_MOUNTAIN_CLUMP_CAP);
+			end
 			if IsSnowWrapX() then
 				local x_wrap_west = GetSnowWrapLandMountainXs(iW);
-				PlaceFrontMountainRidges(self.wholeworldPlotTypes, iW, iH, x_wrap_west - 1, x_wrap_west, x_wrap_west + 1, FRONT_MOUNTAIN_BUDGET, FRONT_MOUNTAIN_CLUMP_CAP);
+				PurgeFrontMountainColumns(self.wholeworldPlotTypes, iW, iH, x_wrap_west - 1, x_wrap_west, x_wrap_west + 1);
+				if not DISABLE_FRONT_MOUNTAIN_RIDGES then
+					PlaceFrontMountainField(self.wholeworldPlotTypes, iW, iH, x_wrap_west - 2, x_wrap_west - 1, x_wrap_west, x_wrap_west + 1, x_wrap_west + 2, FRONT_MOUNTAIN_BUDGET, FRONT_MOUNTAIN_CLUMP_CAP);
+				end
 			end
 		elseif cfg.kind == "snow" and cfg.tilted == true then
-			-- Standard-Diagonal: same ridge design, but the three columns are
-			-- offsets from the row-local fold instead of a fixed column, so
-			-- ridges track the diagonal barrier.
-			local off1, off2, off3 = GetFrontMountainOffsetsWest();
-			PlaceFrontMountainRidges(self.wholeworldPlotTypes, iW, iH, off1, off2, off3, FRONT_MOUNTAIN_BUDGET_DIAGONAL, FRONT_MOUNTAIN_CLUMP_CAP, true);
+			-- Standard-Diagonal: same field design, but the five columns are
+			-- offsets from the row-local fold instead of fixed columns, so
+			-- the field tracks the diagonal barrier.
+			local off1, off2, off3, off4, off5 = GetFrontMountainOffsets5West();
+			PurgeFrontMountainColumns(self.wholeworldPlotTypes, iW, iH, off1, off2, off3, true);
+			if not DISABLE_FRONT_MOUNTAIN_RIDGES then
+				PlaceFrontMountainField(self.wholeworldPlotTypes, iW, iH, off1, off2, off3, off4, off5, FRONT_MOUNTAIN_BUDGET_DIAGONAL, FRONT_MOUNTAIN_CLUMP_CAP, true);
+			end
 			if IsSnowWrapX() then
 				-- The wrap seam sits at the map edges, not on the tilted
 				-- fold, so it uses fixed columns like Standard's does.
 				local x_wrap_west = GetSnowWrapLandMountainXs(iW);
-				PlaceFrontMountainRidges(self.wholeworldPlotTypes, iW, iH, x_wrap_west - 1, x_wrap_west, x_wrap_west + 1, FRONT_MOUNTAIN_BUDGET_DIAGONAL, FRONT_MOUNTAIN_CLUMP_CAP);
+				PurgeFrontMountainColumns(self.wholeworldPlotTypes, iW, iH, x_wrap_west - 1, x_wrap_west, x_wrap_west + 1);
+				if not DISABLE_FRONT_MOUNTAIN_RIDGES then
+					PlaceFrontMountainField(self.wholeworldPlotTypes, iW, iH, x_wrap_west - 2, x_wrap_west - 1, x_wrap_west, x_wrap_west + 1, x_wrap_west + 2, FRONT_MOUNTAIN_BUDGET_DIAGONAL, FRONT_MOUNTAIN_CLUMP_CAP);
+				end
 			end
 		elseif cfg.kind == "wetland" then
-			local col1, col2, col3 = GetFrontMountainColumnsWest(iW);
-			PlaceFrontMountainRidges(self.wholeworldPlotTypes, iW, iH, col1, col2, col3, FRONT_MOUNTAIN_BUDGET, FRONT_MOUNTAIN_CLUMP_CAP);
+			local col1, col2, col3, col4, col5 = GetFrontMountainColumns5West(iW);
+			PurgeFrontMountainColumns(self.wholeworldPlotTypes, iW, iH, col1, col2, col3);
+			if not DISABLE_FRONT_MOUNTAIN_RIDGES then
+				PlaceFrontMountainField(self.wholeworldPlotTypes, iW, iH, col1, col2, col3, col4, col5, FRONT_MOUNTAIN_BUDGET, FRONT_MOUNTAIN_CLUMP_CAP);
+			end
 			if IsSnowWrapX() then
 				local x_wrap_west = GetSnowWrapLandMountainXs(iW);
-				PlaceFrontMountainRidges(self.wholeworldPlotTypes, iW, iH, x_wrap_west - 1, x_wrap_west, x_wrap_west + 1, FRONT_MOUNTAIN_BUDGET, FRONT_MOUNTAIN_CLUMP_CAP);
+				PurgeFrontMountainColumns(self.wholeworldPlotTypes, iW, iH, x_wrap_west - 1, x_wrap_west, x_wrap_west + 1);
+				if not DISABLE_FRONT_MOUNTAIN_RIDGES then
+					PlaceFrontMountainField(self.wholeworldPlotTypes, iW, iH, x_wrap_west - 2, x_wrap_west - 1, x_wrap_west, x_wrap_west + 1, x_wrap_west + 2, FRONT_MOUNTAIN_BUDGET, FRONT_MOUNTAIN_CLUMP_CAP);
+				end
 			end
 		elseif cfg.chaoticMountains then
 			if cfg.kind ~= "tongue" and cfg.kind ~= "snaky" then
@@ -6538,10 +6863,63 @@ function GeneratePlotTypes()
 				end
 			end
 		end
+		-- Inverse of applyFoothillAt: a hill with no mountain in its first
+		-- ring has no reason (from this rule's perspective) to be a hill,
+		-- so it has a chance to get thinned back down to flat.
+		local function applyDehillAt(x, y, chance)
+			local plot = Map.GetPlot(x, y)
+			if plot ~= nil and plot:GetPlotType() == PlotTypes.PLOT_HILLS then
+				local isEvenY, search_table = true, {};
+				if y / 2 > math.floor(y / 2) then
+					isEvenY = false;
+				end
+				if isEvenY then
+					search_table = firstRingYIsEven;
+				else
+					search_table = firstRingYIsOdd;
+				end
+				local nearMtn = false;
+				for loop, plot_adjustments in ipairs(search_table) do
+					local searchX = x + plot_adjustments[1];
+					local searchY = y + plot_adjustments[2];
+					local searchPlot = Map.GetPlot(searchX, searchY)
+					if searchPlot ~= nil and searchPlot:GetPlotType() == PlotTypes.PLOT_MOUNTAIN then
+						nearMtn = true;
+						break
+					end
+				end
+				if nearMtn == false then
+					if chance >= 100 or Map.Rand(100, "Front Dehill") < chance then
+						plot:SetPlotType(PlotTypes.PLOT_LAND, false, false)
+					end
+				end
+			end
+		end
+		local function applyDehills(xStart, xEnd, chance)
+			if chance == nil then
+				chance = 100;
+			end
+			for x = xStart, xEnd do
+				for y = 1, iH - 2 do
+					applyDehillAt(x, y, chance)
+				end
+			end
+		end
+		local function applyDehillsNearFold(loOffset, hiOffset, chance)
+			if chance == nil then
+				chance = 100;
+			end
+			for y = 1, iH - 2 do
+				local mid = TiltedFoldMid(y);
+				for x = mid + loOffset, mid + hiOffset do
+					applyDehillAt(x, y, chance)
+				end
+			end
+		end
 		local fLo = iW / 2 - 5;
 		local fHi = iW / 2 + 4;
 		local cfg = GetBarrierConfig();
-		local foothillChance = 100;
+		local foothillChance = FRONT_FOOTHILL_CHANCE;
 		if cfg ~= nil and cfg.kind == "peaks" then
 			fLo = iW / 2 - 6;
 			fHi = iW / 2 + 5;
@@ -6553,8 +6931,10 @@ function GeneratePlotTypes()
 		if IsSnaky() == false then
 			if IsTiltedMirrorAxis() then
 				applyFoothillsNearFold(fLo - iW / 2, fHi - iW / 2, foothillChance)
+				applyDehillsNearFold(fLo - iW / 2, fHi - iW / 2, FRONT_DEHILL_CHANCE)
 			else
 				applyFoothills(fLo, fHi, foothillChance)
+				applyDehills(fLo, fHi, FRONT_DEHILL_CHANCE)
 			end
 		end
 		if IsSnowWrapX() then
@@ -6565,6 +6945,8 @@ function GeneratePlotTypes()
 			end
 			applyFoothills(x_wrap_west - wPad, x_wrap_west + wPad, foothillChance)
 			applyFoothills(x_wrap_east - wPad, x_wrap_east + wPad, foothillChance)
+			applyDehills(x_wrap_west - wPad, x_wrap_west + wPad, FRONT_DEHILL_CHANCE)
+			applyDehills(x_wrap_east - wPad, x_wrap_east + wPad, FRONT_DEHILL_CHANCE)
 		end
 	end
 
@@ -15595,16 +15977,12 @@ end
 function ForestMountainsToBareTarget()
 	local iW, iH = Map.GetGridSize();
 	local tilted = IsTiltedMirrorAxis();
-	-- This rule is entirely pre-mirror by design: count every mountain that
-	-- exists on the whole canvas right now (both what will end up west and
-	-- east -- pre-mirror the two sides aren't actually symmetric yet, since
-	-- most of the map comes from the base tectonics fractal running once
-	-- over the full width with no left/right symmetry), decide forest/bare
-	-- against the real BARE_MOUNTAIN_TARGET cap directly against that true
-	-- total, and only afterward does the normal end-of-generation mirror
-	-- pass run (elsewhere, much later) and copy west over east as always --
-	-- unrelated to this rule. Deliberately NOT restricted to
-	-- MirrorOwnsPlot's west-only half.
+	local mirrored = (DEF_MIRRORED == 1);
+	-- West-side only, by design (see feedback_west_side_only_rules): counts
+	-- and decides forest/bare only for MirrorOwnsPlot's west half, against
+	-- BARE_MOUNTAIN_TARGET directly as the true final (post-mirror) bare
+	-- count. The later end-of-generation mirror pass reproduces whatever
+	-- this picks onto east untouched, same as everything else in the file.
 	--
 	-- Non-tilted climates (Standard, Oasis, Murky, Peaky, ...) keep the exact
 	-- prior flat skip lookup, computed once. Tilted climates (Standard-Diagonal)
@@ -15642,7 +16020,7 @@ function ForestMountainsToBareTarget()
 		end
 		local x = 0;
 		while x < iW do
-			if skip[x] ~= true then
+			if skip[x] ~= true and MirrorOwnsPlot(x, y, mirrored, iW) then
 				local plot = Map.GetPlot(x, y);
 				if plot ~= nil and plot:GetPlotType() == PlotTypes.PLOT_MOUNTAIN and PlotHasNaturalWonder(plot) ~= true then
 					table.insert(mtns, plot);
@@ -15689,13 +16067,10 @@ function ForestMountainsToBareTarget()
 		end
 		i = i + 1;
 	end
-	-- nMtn/bareWant/nForest are the true pre-mirror totals (whole canvas,
-	-- both sides, before the later mirror pass overwrites east with west) --
-	-- directly comparable to BARE_MOUNTAIN_TARGET, no halving/doubling. Note
-	-- this pre-mirror total can still shift post-mirror, since mirroring
-	-- overwrites whatever was independently on the east with west's copy;
-	-- this rule only guarantees the cap against what it can see right now.
-	local diagLine = "Mountain forest: pre-mirror mtn=" .. nMtn .. " bare=" .. bareWant .. " forested=" .. nForest
+	-- nMtn/bareWant/nForest are west-side-only totals, directly comparable
+	-- to BARE_MOUNTAIN_TARGET as the true final (post-mirror) bare count --
+	-- the later mirror pass reproduces this exact pattern onto east.
+	local diagLine = "Mountain forest: west mtn=" .. nMtn .. " bare=" .. bareWant .. " forested=" .. nForest
 		.. " (forest=" .. nSetForest .. " jungle=" .. nSetJungle .. ")"
 		.. " cap=" .. BARE_MOUNTAIN_TARGET;
 	print(diagLine);
@@ -17901,6 +18276,7 @@ function StartPlotSystem()
 	WeeveeDbg("PlaceNaturalWonders");
 	WeeveeDbgCall("PlaceNaturalWonders", function() start_plot_database:PlaceNaturalWonders(wonderargs) end);
 	WeeveeDbgCall("StripSeparatorNaturalWonders", StripSeparatorNaturalWonders);
+	WeeveeDbgCall("AuditFrontMountainGaps", AuditFrontMountainGaps);
 	WeeveeDbgCall("MaybePlaceFujiHorses", function() MaybePlaceFujiHorses(start_plot_database) end);
 	WeeveeDbgCall("EnsureStartHillsFloor", EnsureStartHillsFloor);
 	WeeveeDbgCall("AddStandardWestEdgeHills", AddStandardWestEdgeHills);
